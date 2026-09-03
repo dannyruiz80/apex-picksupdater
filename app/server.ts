@@ -1,5 +1,7 @@
+import "dotenv/config";
 import express from "express";
 import path from "path";
+import fs from "fs";
 import { createServer as createViteServer } from "vite";
 import {
   fetchSchedule,
@@ -38,6 +40,7 @@ import { decisionBoardService } from "./src/server/decisionBoardService.js";
 import { ApexSportFilter, TennisTourFilter, NormalizedApexGame, NormalizedPlayerPropQuote } from "./src/types.js";
 
 const VALID_SPORTS = new Set<string>(['ALL', ...ALL_SPORTS]);
+const APP_VERSION = JSON.parse(fs.readFileSync(path.join(process.cwd(), 'package.json'), 'utf8')).version as string;
 
 async function startServer() {
   const app = express();
@@ -50,13 +53,16 @@ async function startServer() {
     res.status(200).json({
       status: "ok",
       app: "Apex Picks",
+      version: APP_VERSION,
+      oddsProviderConfigured: marketQuotaGuard.isConfigured(),
+      oddsProviderStatus: marketQuotaGuard.getQuotaState().status,
     });
   });
 
   // Real server endpoint: Version information
   app.get("/api/version", (_req, res) => {
     res.status(200).json({
-      version: "1.10.0",
+      version: APP_VERSION,
       build: "decision-board-ranked-picks",
       environment: process.env.NODE_ENV || "development",
       timestamp: new Date().toISOString(),

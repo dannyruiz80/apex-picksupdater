@@ -96,6 +96,17 @@ export const DecisionBoardPanel: React.FC<DecisionBoardPanelProps> = ({
           </div>
         )}
 
+        {!loading && board?.status === 'NOT_CONFIGURED' && (
+          <div className="rounded-xl border border-rose-500/35 bg-rose-950/20 p-5 flex items-start gap-3">
+            <AlertTriangle className="h-5 w-5 text-rose-300 shrink-0 mt-0.5" />
+            <div>
+              <div className="font-black text-rose-200">ODDS PROVIDER NOT LOADED INTO THE RUNNING SERVER</div>
+              <p className="text-sm text-slate-300 mt-1">{board?.message}</p>
+              <p className="text-xs text-slate-500 mt-2">Apex will not report this as a real no-pick result. Restart with a configured local ODDS_API_KEY and verify /api/health shows oddsProviderConfigured=true.</p>
+            </div>
+          </div>
+        )}
+
         {!loading && passState && (
           <div className="rounded-xl border border-amber-500/30 bg-amber-950/15 p-5 flex items-start gap-3">
             <ShieldCheck className="h-5 w-5 text-amber-300 shrink-0 mt-0.5" />
@@ -107,7 +118,7 @@ export const DecisionBoardPanel: React.FC<DecisionBoardPanelProps> = ({
           </div>
         )}
 
-        {!loading && !passState && topPicks.length === 0 && (
+        {!loading && board?.status !== 'NOT_CONFIGURED' && !passState && topPicks.length === 0 && (
           <div className="rounded-xl border border-slate-800 bg-[#0d1322] p-5 flex items-start gap-3">
             <Target className="h-5 w-5 text-slate-400 shrink-0 mt-0.5" />
             <div>

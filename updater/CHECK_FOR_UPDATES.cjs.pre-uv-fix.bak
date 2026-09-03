@@ -87,7 +87,7 @@ Remove-Item -LiteralPath $stage -Recurse -Force
   const config = readJson(configPath, {});
   if (!config.enabled || !config.repo) {
     console.log('Auto-update source is not configured yet. Installed version will start.');
-    return;
+    process.exit(0);
   }
   try {
     const token = readToken();
@@ -96,7 +96,7 @@ Remove-Item -LiteralPath $stage -Recurse -Force
     const localVersion = currentVersion();
     if (!remoteVersion || !newer(remoteVersion, localVersion)) {
       console.log(`Apex Picks ${localVersion} is current.`);
-      return;
+      process.exit(0);
     }
     const asset = (release.assets || []).find((a) => a.name === (config.assetName || 'apex-picks-windows-app.zip'));
     if (!asset) throw new Error(`Release ${release.tag_name} does not contain ${config.assetName || 'apex-picks-windows-app.zip'}`);
@@ -110,10 +110,9 @@ Remove-Item -LiteralPath $stage -Recurse -Force
     applyZip(zipPath);
     try { fs.rmSync(updateDir, { recursive: true, force: true }); } catch {}
     console.log(`Apex Picks updated successfully to ${remoteVersion}.`);
-    return;
+    process.exit(0);
   } catch (err) {
     console.error(`Update check warning: ${err.message}`);
     process.exitCode = 2;
-    return;
   }
 })();
