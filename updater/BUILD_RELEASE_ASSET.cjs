@@ -1,0 +1,10 @@
+const { spawnSync } = require('child_process');
+const path = require('path');
+const fs = require('fs');
+const root = path.resolve(__dirname, '..');
+const out = path.join(root, 'apex-picks-windows-app.zip');
+if (fs.existsSync(out)) fs.unlinkSync(out);
+const app = path.join(root, 'app');
+const ps = `Compress-Archive -Path '${app.replace(/'/g,"''")}\\*' -DestinationPath '${out.replace(/'/g,"''")}' -Force`;
+const r = spawnSync('powershell.exe', ['-NoProfile','-ExecutionPolicy','Bypass','-Command', ps], { stdio: 'inherit' });
+process.exit(r.status || 0);

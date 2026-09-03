@@ -1,0 +1,6 @@
+{
+  "name": "Apex Picks — Sports Intelligence & Betting Analytics",
+  "description": "Multi-sport intelligence and verified sportsbook market infrastructure with strict quota guard, in-memory caching, identity verification, and live-score firewall.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

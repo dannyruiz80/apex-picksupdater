@@ -1,0 +1,31 @@
+node_modules/
+build/
+dist/
+coverage/
+.DS_Store
+*.log
+.env*
+!.env.example
+# Secrets
+.env
+.env.*
+
+# Keep the safe template
+!.env.example
+
+# Installed dependencies
+node_modules/
+
+# Local Apex runtime / learning data
+data/
+.quota_state.json
+APEX_REAL_*.json
+
+# Generated model evidence / ledgers
+*historicalPropSnapshots*.json
+*mlbPitcherKHistoricalReplay*.json
+*mlbPitcherKStarterShadow*.json
+
+# Local caches/logs
+*.log
+.cache/

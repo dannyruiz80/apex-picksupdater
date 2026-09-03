@@ -1,0 +1,48 @@
+name: Publish Apex Windows Update
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Release version, for example 1.10.1
+        required: true
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  publish:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Resolve release tag
+        id: tag
+        shell: pwsh
+        run: |
+          if ('${{ github.event_name }}' -eq 'workflow_dispatch') {
+            $tag = 'v${{ inputs.version }}'
+          } else {
+            $tag = '${{ github.ref_name }}'
+          }
+          "tag=$tag" >> $env:GITHUB_OUTPUT
+
+      - name: Build Windows app update asset
+        shell: pwsh
+        run: |
+          Compress-Archive -Path app\* -DestinationPath apex-picks-windows-app.zip -Force
+
+      - name: Create or update GitHub release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.tag.outputs.tag }}
+        run: |
+          gh release view "$env:TAG" *> $null
+          if ($LASTEXITCODE -ne 0) {
+            gh release create "$env:TAG" --title "Apex Picks $env:TAG" --generate-notes
+          }
+          gh release upload "$env:TAG" apex-picks-windows-app.zip --clobber

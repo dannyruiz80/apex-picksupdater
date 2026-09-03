@@ -1,0 +1,7 @@
+{
+  "provider": "github-releases",
+  "repo": "",
+  "assetName": "apex-picks-windows-app.zip",
+  "enabled": false,
+  "notes": "Run CONFIGURE_AUTO_UPDATES.cmd once a GitHub release repository is available. Future app updates preserve app/.env and app/data."
+}
