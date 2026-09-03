@@ -1679,20 +1679,27 @@ export interface DecisionBoardPick {
   sport: ApexSport;
   league: string;
   startTime: string;
-  playerName: string;
-  playerId: string;
+  pickType?: 'PLAYER_PROP' | 'GAME_MARKET';
+  displayPick?: string;
+  selectionLabel?: string;
+  gameMarketType?: MarketType | null;
+  playerName: string | null;
+  playerId: string | null;
   marketKey: string;
   marketCategory: string;
-  side: 'OVER' | 'UNDER';
-  line: number;
+  side: 'OVER' | 'UNDER' | 'HOME' | 'AWAY' | 'DRAW';
+  line: number | null;
   sportsbook: string;
   oddsAmerican: number;
   apexProbability: number;
   breakEvenProbability: number;
+  marketConsensusProbability?: number | null;
   edgePercentagePoints: number;
   expectedValuePercent: number;
   reliabilityTier: SampleReliabilityTier;
+  marketDepth?: number | null;
   modelVersion: string;
+  modelValidationStatus?: 'EARLY_EVIDENCE' | 'PROSPECTIVE_VALIDATED' | null;
   calibrationStatus: ProbabilityCalibrationStatus | null;
   quoteTimestamp: string;
   quoteAgeSeconds: number | null;
@@ -1700,7 +1707,7 @@ export interface DecisionBoardPick {
   v3ShadowProbability: number | null;
   v3ShadowSupportsProduction: boolean | null;
   rationale: string[];
-  source: 'LIVE_EVALUATION' | 'SAVED_SNAPSHOT';
+  source: 'LIVE_EVALUATION' | 'SAVED_SNAPSHOT' | 'GAME_MODEL_EVALUATION';
 }
 
 export interface DecisionBoardResponse {

@@ -18,6 +18,7 @@ export const SUPPORTED_SOCCER_COMPETITIONS: SoccerCompetitionConfig[] = [
   { code: 'ger.1', name: 'German Bundesliga', category: 'Domestic League' },
   { code: 'fra.1', name: 'French Ligue 1', category: 'Domestic League' },
   { code: 'usa.1', name: 'MLS', category: 'Domestic League' },
+  { code: 'mex.1', name: 'Liga MX', category: 'Domestic League' },
   { code: 'uefa.champions', name: 'UEFA Champions League', category: 'European Cup' },
   { code: 'uefa.europa', name: 'UEFA Europa League', category: 'European Cup' },
   { code: 'uefa.euro', name: 'UEFA European Championship', category: 'International' },

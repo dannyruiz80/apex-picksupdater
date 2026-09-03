@@ -15,7 +15,7 @@ interface OverviewViewProps {
   lastChecked: Date | null;
   onRefresh: () => void;
   onSelectTab: (tab: NavTabId) => void;
-  onOpenPick?: (eventId: string) => void;
+  onOpenPick?: (eventId: string, pickType?: 'PLAYER_PROP' | 'GAME_MARKET') => void;
 }
 
 const moduleStatus: Partial<Record<NavTabId, { label: string; tone: 'ACTIVE' | 'PARTIAL' | 'LOCKED'; note: string }>> = {
@@ -109,7 +109,7 @@ export const OverviewView: React.FC<OverviewViewProps> = ({
         loading={decisionLoading}
         error={decisionError}
         onScan={scanTopPicks}
-        onOpenPick={(eventId) => onOpenPick ? onOpenPick(eventId) : onSelectTab('props')}
+        onOpenPick={(eventId, pickType) => onOpenPick ? onOpenPick(eventId, pickType) : onSelectTab(pickType === 'GAME_MARKET' ? 'picks' : 'props')}
         compact
         scanLabel="Find Best Picks"
       />

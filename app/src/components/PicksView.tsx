@@ -263,9 +263,11 @@ export const PicksView: React.FC<PicksViewProps> = ({
         loading={decisionBoardLoading}
         error={decisionBoardError}
         onScan={scanDecisionBoard}
-        onOpenPick={(eventId) => {
+        onOpenPick={(eventId, pickType) => {
           const game = rawGames.find((g) => g.eventId === eventId);
-          if (game && onSelectGame) onSelectGame(game);
+          if (!game) return;
+          if (pickType === 'GAME_MARKET') setSelectedGameForMarkets(game);
+          else if (onSelectGame) onSelectGame(game);
         }}
         scanLabel="Find Best Picks"
       />
@@ -765,8 +767,8 @@ export const PicksView: React.FC<PicksViewProps> = ({
                           const pick = decisionBoard.picks.find((p) => p.eventId === game.eventId)!;
                           return (
                             <div className="rounded-lg border border-emerald-500/30 bg-emerald-950/15 p-2.5">
-                              <div className="text-[10px] font-mono font-black text-emerald-400">APEX QUALIFIED</div>
-                              <div className="mt-0.5 text-xs font-bold text-white">{pick.playerName} {pick.side} {pick.line}</div>
+                              <div className="text-[10px] font-mono font-black text-emerald-400">APEX QUALIFIED · {pick.pickType === 'GAME_MARKET' ? 'GAME MODEL' : 'PLAYER PROP'}</div>
+                              <div className="mt-0.5 text-xs font-bold text-white">{pick.displayPick || `${pick.playerName || ''} ${pick.side} ${pick.line ?? ''}`}</div>
                               <div className="mt-0.5 text-[10px] text-slate-400">{(pick.apexProbability * 100).toFixed(1)}% model P · +{pick.expectedValuePercent.toFixed(1)}% EV · {pick.sportsbook} {pick.oddsAmerican > 0 ? '+' : ''}{pick.oddsAmerican}</div>
                             </div>
                           );

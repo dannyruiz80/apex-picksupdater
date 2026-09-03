@@ -231,10 +231,15 @@ export default function App() {
               lastChecked={lastChecked}
               onRefresh={fetchHealthAndVersion}
               onSelectTab={setActiveTab}
-              onOpenPick={(eventId) => {
-                setSelectedSport('ALL');
-                setPropsTargetGameId(eventId);
-                setActiveTab('props');
+              onOpenPick={(eventId, pickType) => {
+                if (pickType === 'GAME_MARKET') {
+                  setSelectedSport('ALL');
+                  setActiveTab('picks');
+                } else {
+                  setSelectedSport('ALL');
+                  setPropsTargetGameId(eventId);
+                  setActiveTab('props');
+                }
               }}
             />
           )}

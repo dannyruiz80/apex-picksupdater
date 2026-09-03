@@ -18,7 +18,7 @@ interface DecisionBoardPanelProps {
   loading?: boolean;
   error?: string | null;
   onScan?: () => void;
-  onOpenPick?: (eventId: string) => void;
+  onOpenPick?: (eventId: string, pickType?: 'PLAYER_PROP' | 'GAME_MARKET') => void;
   compact?: boolean;
   scanLabel?: string;
 }
@@ -57,12 +57,12 @@ export const DecisionBoardPanel: React.FC<DecisionBoardPanelProps> = ({
               <span className="text-xs font-black uppercase tracking-[0.16em]">Apex Decision Board</span>
             </div>
             <span className="rounded-md border border-emerald-500/30 bg-emerald-500/10 px-2 py-0.5 text-[10px] font-mono font-bold text-emerald-300">
-              PRODUCTION GATE ONLY
+              VALUE GATE · MODEL MATURITY SHOWN
             </span>
           </div>
           <h2 className="mt-1.5 text-xl sm:text-2xl font-extrabold text-white">Best verified opportunities first.</h2>
           <p className="mt-1 text-xs sm:text-sm text-slate-400 max-w-3xl">
-            Apex ranks only recommendations that cleared identity, point-in-time, probability, price freshness, edge, EV and reliability gates. If none qualify, the correct answer is PASS.
+            Apex ranks recommendations that cleared identity, point-in-time, probability, price freshness, edge, EV and reliability gates. Independent game models are clearly marked EARLY EVIDENCE until prospective calibration matures.
           </p>
         </div>
 
@@ -96,17 +96,6 @@ export const DecisionBoardPanel: React.FC<DecisionBoardPanelProps> = ({
           </div>
         )}
 
-        {!loading && board?.status === 'NOT_CONFIGURED' && (
-          <div className="rounded-xl border border-rose-500/35 bg-rose-950/20 p-5 flex items-start gap-3">
-            <AlertTriangle className="h-5 w-5 text-rose-300 shrink-0 mt-0.5" />
-            <div>
-              <div className="font-black text-rose-200">ODDS PROVIDER NOT LOADED INTO THE RUNNING SERVER</div>
-              <p className="text-sm text-slate-300 mt-1">{board?.message}</p>
-              <p className="text-xs text-slate-500 mt-2">Apex will not report this as a real no-pick result. Restart with a configured local ODDS_API_KEY and verify /api/health shows oddsProviderConfigured=true.</p>
-            </div>
-          </div>
-        )}
-
         {!loading && passState && (
           <div className="rounded-xl border border-amber-500/30 bg-amber-950/15 p-5 flex items-start gap-3">
             <ShieldCheck className="h-5 w-5 text-amber-300 shrink-0 mt-0.5" />
@@ -118,7 +107,7 @@ export const DecisionBoardPanel: React.FC<DecisionBoardPanelProps> = ({
           </div>
         )}
 
-        {!loading && board?.status !== 'NOT_CONFIGURED' && !passState && topPicks.length === 0 && (
+        {!loading && !passState && topPicks.length === 0 && (
           <div className="rounded-xl border border-slate-800 bg-[#0d1322] p-5 flex items-start gap-3">
             <Target className="h-5 w-5 text-slate-400 shrink-0 mt-0.5" />
             <div>
@@ -136,7 +125,7 @@ export const DecisionBoardPanel: React.FC<DecisionBoardPanelProps> = ({
               const primary = idx === 0;
               return (
                 <article
-                  key={`${pick.eventId}-${pick.playerId}-${pick.marketKey}-${pick.line}-${pick.side}`}
+                  key={`${pick.eventId}-${pick.pickType || 'PLAYER_PROP'}-${pick.playerId || pick.selectionLabel}-${pick.marketKey}-${pick.line}-${pick.side}`}
                   className={`rounded-xl border p-4 sm:p-5 ${primary ? 'border-emerald-400/45 bg-emerald-950/20 xl:col-span-1' : 'border-slate-800 bg-[#0d1322]'}`}
                 >
                   <div className="flex items-start justify-between gap-3">
@@ -146,9 +135,12 @@ export const DecisionBoardPanel: React.FC<DecisionBoardPanelProps> = ({
                           #{pick.rank} {primary ? 'TOP QUALIFIED PICK' : 'QUALIFIED'}
                         </span>
                         <span className="text-[10px] font-mono font-bold text-slate-400">{pick.sport} · {pick.marketCategory}</span>
+                        {pick.pickType === 'GAME_MARKET' && (
+                          <span className="rounded border border-cyan-500/30 bg-cyan-500/10 px-1.5 py-0.5 text-[9px] font-mono font-bold text-cyan-300">GAME MODEL · EARLY EVIDENCE</span>
+                        )}
                       </div>
                       <h3 className="mt-2 text-lg font-extrabold text-white">
-                        {pick.playerName} <span className="text-emerald-300">{pick.side} {pick.line}</span>
+                        {pick.displayPick || `${pick.playerName || ''} ${pick.side} ${pick.line ?? ''}`}
                       </h3>
                       <p className="text-xs text-slate-400 mt-0.5">{pick.eventTitle}</p>
                     </div>
@@ -175,6 +167,7 @@ export const DecisionBoardPanel: React.FC<DecisionBoardPanelProps> = ({
                     <div className="rounded-lg border border-slate-800 bg-black/20 p-2.5">
                       <div className="flex items-center gap-1 text-[10px] text-slate-500"><ShieldCheck className="h-3 w-3" /> DATA</div>
                       <div className="text-sm font-bold text-white mt-0.5">{pick.reliabilityTier}</div>
+                      {pick.marketDepth ? <div className="text-[9px] text-slate-500">{pick.marketDepth} books</div> : null}
                     </div>
                   </div>
 
@@ -197,10 +190,10 @@ export const DecisionBoardPanel: React.FC<DecisionBoardPanelProps> = ({
                     {onOpenPick && (
                       <button
                         type="button"
-                        onClick={() => onOpenPick(pick.eventId)}
+                        onClick={() => onOpenPick(pick.eventId, pick.pickType)}
                         className="inline-flex items-center gap-1 text-xs font-bold text-emerald-300 hover:text-emerald-200"
                       >
-                        Full analysis <ChevronRight className="h-3.5 w-3.5" />
+                        {pick.pickType === 'GAME_MARKET' ? 'Game markets' : 'Full analysis'} <ChevronRight className="h-3.5 w-3.5" />
                       </button>
                     )}
                   </div>

@@ -1,7 +1,7 @@
 {
   "name": "react-example",
   "private": true,
-  "version": "1.10.1",
+  "version": "1.11.0",
   "type": "module",
   "scripts": {
     "dev": "tsx server.ts",
@@ -14,7 +14,8 @@
     "verify:recommendation-gate": "tsx src/server/recommendationGate.verify.ts",
     "verify:mlb-k-v3": "tsx src/server/mlbPitcherKV3.verify.ts",
     "verify:champion-challenger": "tsx src/server/championChallenger.verify.ts",
-    "verify:mlb-k-v5": "tsx src/server/mlbPitcherKV5.verify.ts"
+    "verify:mlb-k-v5": "tsx src/server/mlbPitcherKV5.verify.ts",
+    "verify:game-markets": "tsx src/server/gameMarketModel.verify.ts"
   },
   "dependencies": {
     "@google/genai": "^2.4.0",

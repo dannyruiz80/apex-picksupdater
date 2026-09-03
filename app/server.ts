@@ -37,6 +37,9 @@ import { mlbPitcherKStarterShadowCaptureService } from "./src/server/mlbPitcherK
 import { runMlbPitcherKV5VerificationSuite } from "./src/server/mlbPitcherKV5Verification.js";
 import { simulateMlbPitcherKQuote } from "./src/server/monteCarloSimulationService.js";
 import { decisionBoardService } from "./src/server/decisionBoardService.js";
+import { runGameMarketModelVerificationSuite } from "./src/server/gameMarketModelVerification.js";
+import { gameMarketPredictionRepository } from "./src/server/gameMarketPredictionRepository.js";
+import { gameMarketLearningService } from "./src/server/gameMarketLearningService.js";
 import { ApexSportFilter, TennisTourFilter, NormalizedApexGame, NormalizedPlayerPropQuote } from "./src/types.js";
 
 const VALID_SPORTS = new Set<string>(['ALL', ...ALL_SPORTS]);
@@ -63,7 +66,7 @@ async function startServer() {
   app.get("/api/version", (_req, res) => {
     res.status(200).json({
       version: APP_VERSION,
-      build: "decision-board-ranked-picks",
+      build: "independent-game-market-model-v1",
       environment: process.env.NODE_ENV || "development",
       timestamp: new Date().toISOString(),
     });
@@ -138,6 +141,21 @@ async function startServer() {
     } catch (err: any) {
       res.status(500).json({ status: 'ERROR', message: err.message || 'Decision-board scan failed', picks: [] });
     }
+  });
+
+  // ==========================================================
+  // APEX GAME MARKET MODEL V1 — INDEPENDENT TEAM FORECASTS
+  // ==========================================================
+  app.get("/api/ml/game-markets/v1/verify", (_req, res) => {
+    res.status(200).json(runGameMarketModelVerificationSuite());
+  });
+
+  app.get("/api/ml/game-markets/v1/learning-status", (_req, res) => {
+    res.status(200).json(gameMarketPredictionRepository.getStatus());
+  });
+
+  app.post("/api/ml/game-markets/v1/grade", async (_req, res) => {
+    res.status(200).json(await gameMarketLearningService.gradePending());
   });
 
   // ==========================================
@@ -1085,6 +1103,18 @@ async function startServer() {
       (startupTimer as any).unref?.();
       (intervalTimer as any).unref?.();
       console.log(`[Apex Picks] V5 all-starter learning enabled every ${intervalMinutes} minutes (public MLB data; 0 keyed odds requests).`);
+    }
+
+    // Independent game-market prospective grading. Public ESPN final scores only; 0 keyed odds requests.
+    if (String(process.env.APEX_GAME_MODEL_AUTO_GRADE ?? 'true').toLowerCase() !== 'false') {
+      const gradeRun = () => gameMarketLearningService.gradePending().catch((err: any) => {
+        console.warn(`[Apex Picks] Game-model grading cycle skipped: ${err?.message || err}`);
+      });
+      const gradeStartup = setTimeout(gradeRun, 20_000);
+      const gradeInterval = setInterval(gradeRun, 60 * 60_000);
+      (gradeStartup as any).unref?.();
+      (gradeInterval as any).unref?.();
+      console.log('[Apex Picks] Game-market prospective grading enabled every 60 minutes (public final scores; 0 keyed odds requests).');
     }
   });
 }
