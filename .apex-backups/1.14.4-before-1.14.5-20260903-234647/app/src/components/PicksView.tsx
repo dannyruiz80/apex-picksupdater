@@ -94,9 +94,8 @@ export const PicksView: React.FC<PicksViewProps> = ({
           maxGames: (() => {
             const today = new Intl.DateTimeFormat('en-CA', { timeZone: 'America/Chicago', year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date());
             const future = selectedDate > today;
-            if (selectedSport === 'ALL') return 48;
-            if (selectedSport === 'TENNIS') return future ? 30 : 24;
-            return future ? 12 : 10;
+            if (selectedSport === 'ALL') return future ? 10 : 8;
+            return future ? 8 : 6;
           })(),
         }),
       });

@@ -268,7 +268,7 @@ export function selectDecisionBoardSlateRows(
   maxGamesRaw: number,
   nowMs = Date.now(),
 ): NormalizedApexGame[] {
-  const maxGames = Math.max(1, Math.min(48, Math.floor(maxGamesRaw || (sportFilter === 'ALL' ? 48 : sportFilter === 'TENNIS' ? 30 : 12))));
+  const maxGames = Math.max(1, Math.min(12, Math.floor(maxGamesRaw || (sportFilter === 'ALL' ? 8 : 6))));
   const sportOrder: ApexSport[] = ['MLB', 'NFL', 'NBA', 'WNBA', 'NHL', 'SOCCER', 'TENNIS'];
   const candidates = games.filter((g) => g.status === 'UPCOMING' && g.startTime && Date.parse(g.startTime) > nowMs &&
     (sportFilter === 'ALL' || g.sport === sportFilter))
@@ -419,7 +419,7 @@ export class DecisionBoardService {
   }
 
   async scanGames(games: NormalizedApexGame[], sportFilter: ApexSportFilter, scheduleDate: string, requestedMaxGames: number): Promise<DecisionBoardResponse> {
-    const maxGames = Math.max(1, Math.min(48, Math.floor(requestedMaxGames || (sportFilter === 'ALL' ? 48 : sportFilter === 'TENNIS' ? 30 : 12))));
+    const maxGames = Math.max(1, Math.min(12, Math.floor(requestedMaxGames || (sportFilter === 'ALL' ? 8 : 6))));
     const sportOrder: ApexSport[] = ['MLB', 'NFL', 'NBA', 'WNBA', 'NHL', 'SOCCER', 'TENNIS'];
     const candidates = games.filter((g) => g.status === 'UPCOMING' && g.startTime && Date.parse(g.startTime) > Date.now() &&
       (sportFilter === 'ALL' || g.sport === sportFilter))
@@ -485,8 +485,8 @@ export class DecisionBoardService {
     if (ranked.length) status = 'SUCCESS';
     else if (status !== 'NOT_CONFIGURED' && status !== 'QUOTA_BLOCKED') status = 'NO_QUALIFIED_PICKS';
 
-    notes.push('Decision-board scans now support up to 48 events in broad ALL SPORTS mode so large slates receive meaningful model coverage instead of a tiny sample.');
-    if (sportFilter === 'ALL') notes.push('ALL SPORTS mode keeps round-robin fairness across active sports while allowing enough rounds for large Tennis slates to receive meaningful coverage.');
+    notes.push('Decision-board scans now use a broader event budget (up to 12) instead of the legacy 3-game slice.');
+    if (sportFilter === 'ALL') notes.push('ALL SPORTS mode round-robins sports before repeating one sport so MLB cannot consume every scan slot.');
     else notes.push(`${sportFilter} filter is active; only ${sportFilter} events are eligible for this scan.`);
     notes.push('Per-sport coverage now shows scheduled, scanned, model-ready, qualified, production-connection state and the leading rejection reasons.');
     notes.push('Visible recommendations are sport-diversified only when another sport actually has a production-qualified pick; thresholds are never lowered to force representation.');

@@ -16,7 +16,6 @@ import { marketProvider } from './marketProvider.js';
 import { gameMarketModelService, GameMarketCandidateV1, GameMarketProjectionV1 } from './gameMarketModelService.js';
 import { gameMarketPredictionRepository } from './gameMarketPredictionRepository.js';
 import { formatPropSelectionLabel, humanizePropMarket } from '../propPresentation.js';
-import { tennisMatchWinnerModelService } from './tennisMatchWinnerModelService.js';
 
 const RELIABILITY_ORDER: Record<SampleReliabilityTier, number> = {
   VERY_LIMITED: 0,
@@ -250,28 +249,17 @@ function addReason(target: Record<string, number>, reason: string, count = 1) {
   target[key] = (target[key] || 0) + Math.max(1, count);
 }
 
-const INFORMATIONAL_COVERAGE_REASONS = new Set([
-  'EARLY_EVIDENCE_SHRINKAGE_ACTIVE',
-  'V2_NO_MATERIAL_ADJUSTMENT',
-]);
-
-export function isDisplayedCoverageBlocker(sport: ApexSport, reason: string): boolean {
-  // Soccer early-evidence shrinkage is a risk-control note, not a reason the pick failed.
-  // Keep actual reliability / edge / EV / integrity failures visible.
-  if (sport === 'SOCCER' && INFORMATIONAL_COVERAGE_REASONS.has(reason)) return false;
-  return true;
-}
-
 export function selectDecisionBoardSlateRows(
   games: NormalizedApexGame[],
   sportFilter: ApexSportFilter,
   maxGamesRaw: number,
   nowMs = Date.now(),
 ): NormalizedApexGame[] {
-  const maxGames = Math.max(1, Math.min(48, Math.floor(maxGamesRaw || (sportFilter === 'ALL' ? 48 : sportFilter === 'TENNIS' ? 30 : 12))));
+  const maxGames = Math.max(1, Math.min(12, Math.floor(maxGamesRaw || (sportFilter === 'ALL' ? 8 : 6))));
   const sportOrder: ApexSport[] = ['MLB', 'NFL', 'NBA', 'WNBA', 'NHL', 'SOCCER', 'TENNIS'];
   const candidates = games.filter((g) => g.status === 'UPCOMING' && g.startTime && Date.parse(g.startTime) > nowMs &&
-    (sportFilter === 'ALL' || g.sport === sportFilter))
+    (sportFilter === 'ALL' || g.sport === sportFilter) &&
+    (g.sport !== 'TENNIS' || playerPropProvider.getPropMarketKeysForSport(g.sport).length > 0))
     .sort((a,b) => Date.parse(a.startTime) - Date.parse(b.startTime));
   if (sportFilter !== 'ALL') return candidates.slice(0, maxGames);
 
@@ -317,28 +305,8 @@ export class DecisionBoardService {
     let providerConfigured = true;
     let quotaBlocked = false;
 
-    // Team sports use the established independent game-market model. Tennis now has
-    // its own independent match-winner model and intentionally does not reuse team-score logic.
-    if (game.sport === 'TENNIS') {
-      const tennisModel = await tennisMatchWinnerModelService.buildProjection(game);
-      if (tennisModel.status === 'AVAILABLE') modelDataAvailable = true;
-      else addReason(rejectionReasons, `TENNIS_MATCH_WINNER_MODEL_${tennisModel.status}`);
-
-      const marketResult = await marketProvider.getMarketsForEvent(game);
-      if (marketResult.status === 'NOT_CONFIGURED') {
-        providerConfigured = false;
-        addReason(rejectionReasons, 'ODDS_PROVIDER_NOT_CONFIGURED');
-      } else if (marketResult.status === 'QUOTA_EXCEEDED') {
-        quotaBlocked = true;
-        addReason(rejectionReasons, 'ODDS_PROVIDER_QUOTA_BLOCKED');
-      } else if (marketResult.status !== 'SUCCESS' || !marketResult.markets) {
-        addReason(rejectionReasons, `TENNIS_MATCH_WINNER_MARKET_${marketResult.status}`);
-      } else if (tennisModel.status === 'AVAILABLE') {
-        const evaluation = tennisMatchWinnerModelService.evaluateMoneyline(game, marketResult.markets, tennisModel);
-        picks.push(...evaluation.picks);
-        Object.entries(evaluation.rejectionReasons).forEach(([reason, count]) => addReason(rejectionReasons, reason, count));
-      }
-    } else {
+    // Independent team-game market path. Tennis is intentionally excluded because it uses a separate player model.
+    if (game.sport !== 'TENNIS') {
       const marketResult = await marketProvider.getMarketsForEvent(game);
       if (marketResult.status === 'NOT_CONFIGURED') {
         providerConfigured = false;
@@ -366,9 +334,7 @@ export class DecisionBoardService {
           picks.push(...evaluation.qualified.map((c)=>gameCandidateToPick(game, model, c)));
           for (const candidate of evaluation.candidates) {
             if (candidate.qualifies) continue;
-            if (candidate.reasonCodes?.length) candidate.reasonCodes
-              .filter((reason) => isDisplayedCoverageBlocker(game.sport, reason))
-              .forEach((reason)=>addReason(rejectionReasons, reason));
+            if (candidate.reasonCodes?.length) candidate.reasonCodes.forEach((reason)=>addReason(rejectionReasons, reason));
             else addReason(rejectionReasons, 'GAME_MARKET_NOT_QUALIFIED');
           }
           if (!evaluation.candidates.length) addReason(rejectionReasons, 'NO_EXECUTABLE_GAME_MARKET_CANDIDATES');
@@ -404,6 +370,8 @@ export class DecisionBoardService {
       } else {
         addReason(rejectionReasons, `PROP_${propResult.status}`);
       }
+    } else if (game.sport === 'TENNIS') {
+      addReason(rejectionReasons, 'TENNIS_PRODUCTION_MODEL_NOT_CONNECTED_TO_DECISION_BOARD');
     }
 
     if (!providerConfigured) return { status:'NOT_CONFIGURED', message:'Odds provider is not configured.', picks:[], modelDataAvailable:false, rejectionReasons };
@@ -419,7 +387,7 @@ export class DecisionBoardService {
   }
 
   async scanGames(games: NormalizedApexGame[], sportFilter: ApexSportFilter, scheduleDate: string, requestedMaxGames: number): Promise<DecisionBoardResponse> {
-    const maxGames = Math.max(1, Math.min(48, Math.floor(requestedMaxGames || (sportFilter === 'ALL' ? 48 : sportFilter === 'TENNIS' ? 30 : 12))));
+    const maxGames = Math.max(1, Math.min(12, Math.floor(requestedMaxGames || (sportFilter === 'ALL' ? 8 : 6))));
     const sportOrder: ApexSport[] = ['MLB', 'NFL', 'NBA', 'WNBA', 'NHL', 'SOCCER', 'TENNIS'];
     const candidates = games.filter((g) => g.status === 'UPCOMING' && g.startTime && Date.parse(g.startTime) > Date.now() &&
       (sportFilter === 'ALL' || g.sport === sportFilter))
@@ -429,7 +397,7 @@ export class DecisionBoardService {
     const ensureCoverage = (sport: ApexSport) => {
       let row = coverage.get(sport);
       if (!row) {
-        const gameConnected = true;
+        const gameConnected = sport !== 'TENNIS';
         const propConnected = playerPropProvider.getPropMarketKeysForSport(sport).length > 0;
         row = {
           sport,
@@ -473,9 +441,7 @@ export class DecisionBoardService {
       row.lastMessage = evaluated.message;
       if (evaluated.modelDataAvailable) { modelData++; row.eventsWithModelData++; }
       row.qualifiedPicks += evaluated.picks.length;
-      Object.entries(evaluated.rejectionReasons)
-        .filter(([reason]) => isDisplayedCoverageBlocker(game.sport, reason))
-        .forEach(([reason,count]) => addReason(row.rejectionReasons, reason, count));
+      Object.entries(evaluated.rejectionReasons).forEach(([reason,count]) => addReason(row.rejectionReasons, reason, count));
       picks.push(...evaluated.picks);
       if (evaluated.status === 'NOT_CONFIGURED') { status='NOT_CONFIGURED'; notes.push('Scan stopped because ODDS_API_KEY is not configured.'); break; }
       if (evaluated.status === 'QUOTA_BLOCKED') { status='QUOTA_BLOCKED'; notes.push('Scan stopped by the provider quota guard.'); break; }
@@ -485,14 +451,13 @@ export class DecisionBoardService {
     if (ranked.length) status = 'SUCCESS';
     else if (status !== 'NOT_CONFIGURED' && status !== 'QUOTA_BLOCKED') status = 'NO_QUALIFIED_PICKS';
 
-    notes.push('Decision-board scans now support up to 48 events in broad ALL SPORTS mode so large slates receive meaningful model coverage instead of a tiny sample.');
-    if (sportFilter === 'ALL') notes.push('ALL SPORTS mode keeps round-robin fairness across active sports while allowing enough rounds for large Tennis slates to receive meaningful coverage.');
+    notes.push('Decision-board scans now use a broader event budget (up to 12) instead of the legacy 3-game slice.');
+    if (sportFilter === 'ALL') notes.push('ALL SPORTS mode round-robins sports before repeating one sport so MLB cannot consume every scan slot.');
     else notes.push(`${sportFilter} filter is active; only ${sportFilter} events are eligible for this scan.`);
     notes.push('Per-sport coverage now shows scheduled, scanned, model-ready, qualified, production-connection state and the leading rejection reasons.');
     notes.push('Visible recommendations are sport-diversified only when another sport actually has a production-qualified pick; thresholds are never lowered to force representation.');
     notes.push('Game-market probabilities are produced independently from public historical team results; current sportsbook prices enter only after forecasting for EV/edge evaluation.');
     notes.push('APEX_GAME_MARKET_V1 remains EARLY EVIDENCE and is subject to calibration/integrity guardrails.');
-    notes.push('Tennis match winner now uses APEX_TENNIS_MATCH_WINNER_V1 from completed ESPN match history; tennis spreads, totals and player props remain fail-closed.');
     notes.push('Existing player-prop production models remain ranked in the same board; future-date prop markets may not be posted yet, so a future slate can legitimately rely more heavily on game markets.');
 
     const coverageRows = coverageBySport();
