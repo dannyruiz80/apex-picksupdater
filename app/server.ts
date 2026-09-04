@@ -40,6 +40,7 @@ import { decisionBoardService } from "./src/server/decisionBoardService.js";
 import { runGameMarketModelVerificationSuite } from "./src/server/gameMarketModelVerification.js";
 import { gameMarketPredictionRepository } from "./src/server/gameMarketPredictionRepository.js";
 import { gameMarketLearningService } from "./src/server/gameMarketLearningService.js";
+import { gameMarketBoardService } from "./src/server/gameMarketBoardService.js";
 import { ApexSportFilter, TennisTourFilter, NormalizedApexGame, NormalizedPlayerPropQuote } from "./src/types.js";
 
 const VALID_SPORTS = new Set<string>(['ALL', ...ALL_SPORTS]);
@@ -66,7 +67,7 @@ async function startServer() {
   app.get("/api/version", (_req, res) => {
     res.status(200).json({
       version: APP_VERSION,
-      build: "independent-game-market-model-v1",
+      build: "win-probability-game-market-v2-shadow",
       environment: process.env.NODE_ENV || "development",
       timestamp: new Date().toISOString(),
     });
@@ -144,9 +145,38 @@ async function startServer() {
   });
 
   // ==========================================================
+  // DEDICATED WIN PROBABILITY / GAME MARKET BOARD
+  // Game markets only: ML, spread and total. Props cannot crowd
+  // these categories out of the dedicated view.
+  // ==========================================================
+  app.post("/api/game-market-board/scan", async (req, res) => {
+    const sportRaw = String(req.body?.sport || 'ALL').toUpperCase();
+    const sport = VALID_SPORTS.has(sportRaw) ? (sportRaw as ApexSportFilter) : 'ALL';
+    const date = String(req.body?.date || '');
+    const maxGames = Math.max(1, Math.min(8, Number(req.body?.maxGames || 5)));
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) {
+      return res.status(400).json({ status: 'ERROR', message: 'date must be YYYY-MM-DD', events: [] });
+    }
+    if (sport === 'TENNIS') {
+      return res.status(400).json({ status: 'ERROR', message: 'Tennis uses the separate match/player model.', events: [] });
+    }
+    try {
+      const schedule = await fetchSchedule(sport, date);
+      const report = await gameMarketBoardService.scan(schedule.games, sport, schedule.scheduleDate, maxGames);
+      res.status(200).json(report);
+    } catch (err: any) {
+      res.status(500).json({ status: 'ERROR', message: err.message || 'Game-market board scan failed', events: [] });
+    }
+  });
+
+  // ==========================================================
   // APEX GAME MARKET MODEL V1 — INDEPENDENT TEAM FORECASTS
   // ==========================================================
   app.get("/api/ml/game-markets/v1/verify", (_req, res) => {
+    res.status(200).json(runGameMarketModelVerificationSuite());
+  });
+
+  app.get("/api/ml/game-markets/v2/verify", (_req, res) => {
     res.status(200).json(runGameMarketModelVerificationSuite());
   });
 

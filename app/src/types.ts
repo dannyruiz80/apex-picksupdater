@@ -1643,6 +1643,7 @@ export interface BacktestVerifyResponse {
 export type NavTabId =
   | 'overview'
   | 'picks'
+  | 'win-probability'
   | 'live'
   | 'props'
   | 'parlays'
@@ -1708,7 +1709,24 @@ export interface DecisionBoardPick {
   v3ShadowSupportsProduction: boolean | null;
   rationale: string[];
   source: 'LIVE_EVALUATION' | 'SAVED_SNAPSHOT' | 'GAME_MODEL_EVALUATION';
+  shadowModelVersion?: string | null;
+  shadowModelProbability?: number | null;
+  shadowModelSupportsProduction?: boolean | null;
+  rawModelProbability?: number | null;
+  guardedDecisionProbability?: number | null;
+  decisionReferenceProbability?: number | null;
+  probabilityShrinkageWeight?: number | null;
+  modelMarketDisagreementPP?: number | null;
+  rawExpectedValuePercent?: number | null;
+  gameIntegrityStatus?: 'QUALIFIED' | 'REVIEW' | 'VERIFY' | 'PASS' | null;
+  gameIntegrityReasons?: string[];
+  gameEvTier?: 'NORMAL' | 'HEIGHTENED' | 'EXTREME' | null;
+  crossMarketConsistent?: boolean | null;
+  modelEvidenceObservations?: number | null;
+  v2ContributionPP?: number | null;
+  v2ContributionStatus?: 'MATERIAL' | 'NO_MATERIAL_ADJUSTMENT' | 'UNAVAILABLE' | null;
 }
+
 
 export interface DecisionBoardResponse {
   status: DecisionBoardStatus;
@@ -1721,5 +1739,66 @@ export interface DecisionBoardResponse {
   gamesWithModelData: number;
   qualifiedCount: number;
   picks: DecisionBoardPick[];
+  notes: string[];
+}
+
+
+// ==========================================
+// DEDICATED GAME MARKET / WIN PROBABILITY BOARD
+// ==========================================
+export interface GameMarketBoardEvent {
+  eventId: string;
+  eventTitle: string;
+  sport: ApexSport;
+  league: string;
+  startTime: string;
+  homeTeam: string;
+  awayTeam: string;
+  modelStatus: 'AVAILABLE' | 'INSUFFICIENT_DATA' | 'UNSUPPORTED';
+  modelReason: string | null;
+  modelVersion: string;
+  validationStatus: 'EARLY_EVIDENCE';
+  reliabilityTier: SampleReliabilityTier;
+  homeSampleCount: number;
+  awaySampleCount: number;
+  expectedHomeScore: number | null;
+  expectedAwayScore: number | null;
+  expectedMargin: number | null;
+  expectedTotal: number | null;
+  homeWinProbability: number | null;
+  awayWinProbability: number | null;
+  drawProbability: number | null;
+  shadowModelVersion: string | null;
+  shadowExpectedHomeScore: number | null;
+  shadowExpectedAwayScore: number | null;
+  shadowHomeWinProbability: number | null;
+  shadowAwayWinProbability: number | null;
+  contextStatus: 'AVAILABLE' | 'PARTIAL' | 'UNAVAILABLE' | null;
+  contextNotes: string[];
+  qualifiedPicks: DecisionBoardPick[];
+  reviewPicks: DecisionBoardPick[];
+  candidateCount: number;
+  rejectedCandidateCount: number;
+}
+
+export interface GameMarketBoardResponse {
+  status: DecisionBoardStatus;
+  message: string;
+  generatedAt: string;
+  sportFilter: ApexSportFilter;
+  scheduleDate: string;
+  requestedMaxGames: number;
+  gamesScanned: number;
+  modelsAvailable: number;
+  qualifiedCount: number;
+  topMoneyline: DecisionBoardPick | null;
+  topSpread: DecisionBoardPick | null;
+  topTotal: DecisionBoardPick | null;
+  topMoneylineCandidate: DecisionBoardPick | null;
+  topSpreadCandidate: DecisionBoardPick | null;
+  topTotalCandidate: DecisionBoardPick | null;
+  reviewCount: number;
+  rankedGamePicks: DecisionBoardPick[];
+  events: GameMarketBoardEvent[];
   notes: string[];
 }

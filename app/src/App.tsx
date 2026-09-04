@@ -13,6 +13,7 @@ import { Sidebar } from './components/Sidebar';
 import { MobileNav } from './components/MobileNav';
 import { OverviewView } from './components/OverviewView';
 import { PicksView } from './components/PicksView';
+import { WinProbabilityView } from './components/WinProbabilityView';
 import { LiveView } from './components/LiveView';
 import { PropsView } from './components/PropsView';
 import { AuditView } from './components/AuditView';
@@ -234,7 +235,7 @@ export default function App() {
               onOpenPick={(eventId, pickType) => {
                 if (pickType === 'GAME_MARKET') {
                   setSelectedSport('ALL');
-                  setActiveTab('picks');
+                  setActiveTab('win-probability');
                 } else {
                   setSelectedSport('ALL');
                   setPropsTargetGameId(eventId);
@@ -259,6 +260,18 @@ export default function App() {
                 setPropsTargetGameId(game.eventId);
                 setActiveTab('props');
               }}
+              onOpenWinProbability={() => setActiveTab('win-probability')}
+            />
+          )}
+
+
+          {activeTab === 'win-probability' && (
+            <WinProbabilityView
+              selectedSport={selectedSport}
+              setSelectedSport={setSelectedSport}
+              selectedDate={selectedDate}
+              scheduleData={scheduleData}
+              onGoToPicks={() => setActiveTab('picks')}
             />
           )}
 
@@ -296,6 +309,7 @@ export default function App() {
 
           {activeTab !== 'overview' &&
             activeTab !== 'picks' &&
+            activeTab !== 'win-probability' &&
             activeTab !== 'live' &&
             activeTab !== 'props' &&
             activeTab !== 'sims' &&

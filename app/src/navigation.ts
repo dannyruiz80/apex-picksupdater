@@ -1,5 +1,6 @@
 import {
   TrendingUp,
+  Gauge,
   Radio,
   Layers,
   Sparkles,
@@ -27,6 +28,14 @@ export const NAVIGATION_ITEMS: NavItem[] = [
     shortLabel: 'Picks',
     iconName: 'TrendingUp',
     description: 'Algorithmic point spreads, moneylines, and model projections',
+    category: 'Core',
+  },
+  {
+    id: 'win-probability',
+    label: 'Win Probability',
+    shortLabel: 'Win P',
+    iconName: 'Gauge',
+    description: 'Independent moneyline win probabilities plus spread/total value recommendations',
     category: 'Core',
   },
   {
@@ -101,6 +110,8 @@ export const getNavIcon = (id: NavTabId) => {
       return LayoutDashboard;
     case 'picks':
       return TrendingUp;
+    case 'win-probability':
+      return Gauge;
     case 'live':
       return Radio;
     case 'props':

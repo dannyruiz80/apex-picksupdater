@@ -88,33 +88,65 @@ function quoteToPick(game: NormalizedApexGame, quote: NormalizedPlayerPropQuote)
   };
 }
 
-function gameCandidateToPick(game: NormalizedApexGame, model: GameMarketProjectionV1, c: GameMarketCandidateV1): DecisionBoardPick {
+export function gameCandidateToPick(game: NormalizedApexGame, model: GameMarketProjectionV1, c: GameMarketCandidateV1): DecisionBoardPick {
   const projected = model.expectedHomeScore !== null && model.expectedAwayScore !== null
     ? `Independent projection: ${game.awayTeam || 'Away'} ${model.expectedAwayScore.toFixed(1)} – ${game.homeTeam || 'Home'} ${model.expectedHomeScore.toFixed(1)}.`
     : 'Independent score projection available.';
   const consensus = c.marketConsensusProbability !== null
-    ? `Sportsbook no-vig consensus ${(c.marketConsensusProbability * 100).toFixed(1)}%; it is comparison-only and is not an input to the model.`
-    : 'Sportsbook price is comparison-only and is not an input to the model.';
+    ? `Sportsbook no-vig consensus ${(c.marketConsensusProbability * 100).toFixed(1)}%; comparison-only and never an input to the raw sports model.`
+    : 'Sportsbook price is comparison-only and is not an input to the raw sports model.';
+  const v2 = c.v2ContributionStatus === 'NO_MATERIAL_ADJUSTMENT'
+    ? 'V2 context produced NO MATERIAL ADJUSTMENT.'
+    : c.v2ContributionStatus === 'MATERIAL' && c.v2ContributionPP !== null && c.v2ContributionPP !== undefined
+      ? `V2 context moved the side probability ${c.v2ContributionPP >= 0 ? '+' : ''}${c.v2ContributionPP.toFixed(1)} pp; shadow remains audit-only.`
+      : 'V2 context contribution is unavailable for this market.';
+
   const rationale = [
-    `Independent model probability ${(c.modelProbability * 100).toFixed(1)}% vs ${(c.breakEvenProbability * 100).toFixed(1)}% executable break-even.`,
+    `Raw independent model probability ${(c.modelProbability * 100).toFixed(1)}%.`,
+    `Guarded decision probability ${(c.decisionProbability * 100).toFixed(1)}% vs ${(c.breakEvenProbability * 100).toFixed(1)}% executable break-even.`,
     `${projected}`,
-    `Edge +${c.edgePercentagePoints.toFixed(1)} pp with +${c.expectedValuePercent.toFixed(1)}% expected value across ${c.marketDepth} fresh book${c.marketDepth === 1 ? '' : 's'}.`,
+    `Guarded edge ${c.edgePercentagePoints >= 0 ? '+' : ''}${c.edgePercentagePoints.toFixed(1)} pp with ${c.expectedValuePercent >= 0 ? '+' : ''}${c.expectedValuePercent.toFixed(1)}% EV across ${c.marketDepth} fresh book${c.marketDepth === 1 ? '' : 's'}.`,
+    `Raw unshrunk EV would be ${c.rawExpectedValuePercent >= 0 ? '+' : ''}${c.rawExpectedValuePercent.toFixed(1)}%; it does not control qualification while V1 is early-evidence.`,
     consensus,
+    c.modelMarketDisagreementPP !== null
+      ? `Raw model vs market-consensus disagreement: ${c.modelMarketDisagreementPP.toFixed(1)} pp.`
+      : 'Model-vs-market disagreement could not be computed.',
     `${model.reliabilityTier} team-history reliability (${model.homeSampleCount} home-team / ${model.awaySampleCount} away-team games).`,
-    'APEX_GAME_MARKET_V1 is in EARLY EVIDENCE status; prospective calibration is accumulating before model promotion claims are made.',
+    `Prospective game-model evidence: ${c.modelEvidenceObservations} independent decisive observation${c.modelEvidenceObservations === 1 ? '' : 's'}; model weight ${(c.probabilityShrinkageWeight * 100).toFixed(0)}%.`,
+    v2,
+    `Integrity state: ${c.integrityStatus}${c.integrityReasonCodes.length ? ` (${c.integrityReasonCodes.join(', ')})` : ''}.`,
   ];
+
   return {
     rank: 0, eventId: game.eventId, eventTitle: eventTitle(game), sport: game.sport,
     league: game.league || game.competition || game.sport, startTime: game.startTime,
     pickType: 'GAME_MARKET', displayPick: c.selectionLabel, selectionLabel: c.selectionLabel, gameMarketType: c.marketType,
     playerName: null, playerId: null, marketKey: c.marketType.toLowerCase(), marketCategory: c.marketType,
     side: c.side, line: c.point, sportsbook: c.sportsbook, oddsAmerican: c.oddsAmerican,
-    apexProbability: c.modelProbability, breakEvenProbability: c.breakEvenProbability,
+    // For bet ranking, apexProbability is the guarded decision probability. The raw independent
+    // probability remains separately exposed below and on the Win Probability screen.
+    apexProbability: c.decisionProbability, breakEvenProbability: c.breakEvenProbability,
     marketConsensusProbability: c.marketConsensusProbability, edgePercentagePoints: c.edgePercentagePoints,
     expectedValuePercent: c.expectedValuePercent, reliabilityTier: model.reliabilityTier, marketDepth: c.marketDepth,
     modelVersion: model.modelVersion, modelValidationStatus: 'EARLY_EVIDENCE', calibrationStatus: null,
     quoteTimestamp: c.quoteTimestamp, quoteAgeSeconds: quoteAgeSeconds(c.quoteTimestamp), pointInTimeValid: model.pointInTimeValid,
     v3ShadowProbability: null, v3ShadowSupportsProduction: null, rationale, source: 'GAME_MODEL_EVALUATION',
+    shadowModelVersion: model.shadowModelVersion,
+    shadowModelProbability: c.shadowModelProbability ?? null,
+    shadowModelSupportsProduction: c.shadowSupportsProduction ?? null,
+    rawModelProbability: c.modelProbability,
+    guardedDecisionProbability: c.decisionProbability,
+    decisionReferenceProbability: c.decisionReferenceProbability,
+    probabilityShrinkageWeight: c.probabilityShrinkageWeight,
+    modelMarketDisagreementPP: c.modelMarketDisagreementPP,
+    rawExpectedValuePercent: c.rawExpectedValuePercent,
+    gameIntegrityStatus: c.integrityStatus,
+    gameIntegrityReasons: [...c.reasonCodes],
+    gameEvTier: c.evTier,
+    crossMarketConsistent: c.crossMarketConsistent,
+    modelEvidenceObservations: c.modelEvidenceObservations,
+    v2ContributionPP: c.v2ContributionPP ?? null,
+    v2ContributionStatus: c.v2ContributionStatus ?? 'UNAVAILABLE',
   };
 }
 
@@ -186,7 +218,16 @@ export class DecisionBoardService {
         const model = await gameMarketModelService.buildProjection(game);
         if (model.status === 'AVAILABLE') {
           modelDataAvailable = true;
-          const evaluation = gameMarketModelService.evaluateMarkets(game, marketResult.markets, model);
+          const sportEvidence = gameMarketPredictionRepository.getEvidenceFor(game.sport);
+          const evaluation = gameMarketModelService.evaluateMarkets(game, marketResult.markets, model, {
+            independentDecisiveObservations: sportEvidence.independentDecisiveObservations,
+            calibrationGap: sportEvidence.calibrationGap,
+            byMarket: {
+              MONEYLINE: gameMarketPredictionRepository.getEvidenceFor(game.sport, 'MONEYLINE'),
+              SPREAD: gameMarketPredictionRepository.getEvidenceFor(game.sport, 'SPREAD'),
+              TOTAL: gameMarketPredictionRepository.getEvidenceFor(game.sport, 'TOTAL'),
+            },
+          });
           gameMarketPredictionRepository.append(game, evaluation);
           picks.push(...evaluation.qualified.map((c)=>gameCandidateToPick(game, model, c)));
         }

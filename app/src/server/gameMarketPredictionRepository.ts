@@ -35,10 +35,21 @@ export interface GameMarketPredictionSnapshotV1 {
     quoteTimestamp: string;
     marketDepth: number;
     modelProbability: number;
+    decisionProbability?: number | null;
+    probabilityShrinkageWeight?: number | null;
+    modelEvidenceObservations?: number | null;
     marketConsensusProbability: number | null;
+    modelMarketDisagreementPP?: number | null;
     breakEvenProbability: number;
+    rawEdgePercentagePoints?: number | null;
+    rawExpectedValuePercent?: number | null;
     edgePercentagePoints: number;
     expectedValuePercent: number;
+    integrityStatus?: string | null;
+    integrityReasonCodes?: string[];
+    crossMarketConsistent?: boolean | null;
+    v2ContributionPP?: number | null;
+    v2ContributionStatus?: string | null;
     qualifies: boolean;
     outcome?: GameMarketGradingOutcome | null;
     profitUnits?: number | null;
@@ -78,8 +89,12 @@ export class GameMarketPredictionRepository {
       expectedMargin:evaluation.model.expectedMargin,expectedTotal:evaluation.model.expectedTotal,
       candidates:relevant.map(c=>({candidateId:c.candidateId,marketType:c.marketType,side:c.side,selectionLabel:c.selectionLabel,point:c.point,
         sportsbook:c.sportsbook,oddsAmerican:c.oddsAmerican,quoteTimestamp:c.quoteTimestamp,marketDepth:c.marketDepth,modelProbability:c.modelProbability,
-        marketConsensusProbability:c.marketConsensusProbability,breakEvenProbability:c.breakEvenProbability,edgePercentagePoints:c.edgePercentagePoints,
-        expectedValuePercent:c.expectedValuePercent,qualifies:c.qualifies,outcome:null,profitUnits:null})),gradingStatus:'PENDING',gradedAt:null,actualHomeScore:null,actualAwayScore:null});
+        decisionProbability:c.decisionProbability,probabilityShrinkageWeight:c.probabilityShrinkageWeight,modelEvidenceObservations:c.modelEvidenceObservations,
+        marketConsensusProbability:c.marketConsensusProbability,modelMarketDisagreementPP:c.modelMarketDisagreementPP,breakEvenProbability:c.breakEvenProbability,
+        rawEdgePercentagePoints:c.rawEdgePercentagePoints,rawExpectedValuePercent:c.rawExpectedValuePercent,edgePercentagePoints:c.edgePercentagePoints,
+        expectedValuePercent:c.expectedValuePercent,integrityStatus:c.integrityStatus,integrityReasonCodes:[...c.integrityReasonCodes],
+        crossMarketConsistent:c.crossMarketConsistent,v2ContributionPP:c.v2ContributionPP??null,v2ContributionStatus:c.v2ContributionStatus??null,
+        qualifies:c.qualifies,outcome:null,profitUnits:null})),gradingStatus:'PENDING',gradedAt:null,actualHomeScore:null,actualAwayScore:null});
     this.write(rows.slice(-5000));
   }
   grade(snapshotId:string, homeScore:number, awayScore:number, gradedAt=new Date().toISOString()) {
@@ -96,6 +111,27 @@ export class GameMarketPredictionRepository {
     }
     row.gradingStatus='GRADED';row.gradedAt=gradedAt;row.actualHomeScore=homeScore;row.actualAwayScore=awayScore;this.write(rows);return true;
   }
+  getEvidenceFor(sport: string, marketType?: string) {
+    const rows=this.getAll().filter(r=>r.gradingStatus==='GRADED' && r.sport===sport);
+    const first=new Map<string,{p:number;y:number}>();
+    for(const row of rows.sort((a,b)=>Date.parse(a.createdAt)-Date.parse(b.createdAt))){
+      for(const c of row.candidates){
+        if(marketType && c.marketType!==marketType) continue;
+        if(!c.outcome||c.outcome==='PUSH') continue;
+        const key=`${row.eventId}|${c.marketType}|${c.side}|${c.point}`;
+        if(first.has(key)) continue;
+        first.set(key,{p:c.modelProbability,y:c.outcome==='WIN'?1:0});
+      }
+    }
+    const obs=[...first.values()];
+    const actual=obs.length?obs.reduce((sum,o)=>sum+o.y,0)/obs.length:null;
+    const predicted=obs.length?obs.reduce((sum,o)=>sum+o.p,0)/obs.length:null;
+    return {
+      independentDecisiveObservations: obs.length,
+      calibrationGap: predicted!==null&&actual!==null?predicted-actual:null,
+    };
+  }
+
   getStatus() {
     const rows=this.getAll(); const graded=rows.filter(r=>r.gradingStatus==='GRADED');
     // Earliest snapshot per event/market/side/line prevents refreshes from inflating model evidence.

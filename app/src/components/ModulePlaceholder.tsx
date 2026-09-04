@@ -21,13 +21,24 @@ export const ModulePlaceholder: React.FC<ModulePlaceholderProps> = ({
     switch (id) {
       case 'picks':
         return {
-          pipeline: 'Spread & Moneyline Model Pipeline',
-          contract: 'Awaiting verified sports odds feed & consensus line integration',
-          status: 'Pipeline Scaffolded',
+          pipeline: 'Ranked Cross-Market Decision Engine',
+          contract: 'Production gate active for verified props and independent game-market candidates',
+          status: 'Decision Engine Active',
           specs: [
-            'No fabricated picks or fake consensus data active',
-            'Model weights pending live data provider connection',
-            'Strict server-side secret management configured',
+            'Independent moneyline/spread/total probabilities active',
+            'Current sportsbook price enters only after forecasting for EV/edge',
+            'Fail-closed identity, freshness, reliability and price gates remain active',
+          ],
+        };
+      case 'win-probability':
+        return {
+          pipeline: 'Independent Win Probability & Game Market Engine',
+          contract: 'APEX_GAME_MARKET_V1 active with MLB/NFL V2 context challenger in shadow',
+          status: 'Game Model Active',
+          specs: [
+            'Dedicated moneyline, spread and total recommendation categories',
+            'Win probability remains visible even when current price is a PASS',
+            'V2 context cannot override production until prospective evidence supports promotion',
           ],
         };
       case 'live':

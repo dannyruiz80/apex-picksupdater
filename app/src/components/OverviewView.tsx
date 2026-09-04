@@ -19,7 +19,8 @@ interface OverviewViewProps {
 }
 
 const moduleStatus: Partial<Record<NavTabId, { label: string; tone: 'ACTIVE' | 'PARTIAL' | 'LOCKED'; note: string }>> = {
-  picks: { label: 'SLATE ACTIVE', tone: 'ACTIVE', note: 'Verified schedules and sportsbook market inspection.' },
+  picks: { label: 'SLATE ACTIVE', tone: 'ACTIVE', note: 'Ranked cross-market decision board with verified price/value gating.' },
+  'win-probability': { label: 'GAME MODEL ACTIVE', tone: 'ACTIVE', note: 'Independent moneyline win probability plus spread/total value board; MLB/NFL V2 context shadow active.' },
   live: { label: 'LIVE ACTIVE', tone: 'ACTIVE', note: 'Verified live-score tracking and state normalization.' },
   props: { label: 'DECISION ACTIVE', tone: 'ACTIVE', note: 'Production BET/PASS gate with probability, edge and EV.' },
   sims: { label: 'MLB K ACTIVE', tone: 'ACTIVE', note: '10,000x verified pitcher-K simulations; team sims remain locked.' },
@@ -123,10 +124,13 @@ export const OverviewView: React.FC<OverviewViewProps> = ({
             </div>
             <h1 className="text-2xl sm:text-3xl font-extrabold text-white mt-2">Use the deeper engines to inspect or corroborate the decision.</h1>
             <p className="text-sm text-slate-300 mt-2 leading-relaxed">
-              The Decision Board above is the starting point. Player Props provides the full probability/EV breakdown; Sims independently corroborates verified MLB pitcher-K distributions; Audit shows calibration and champion/challenger evidence.
+              The Decision Board above is the starting point. Win Probability isolates moneyline, spread and total recommendations so props cannot crowd them out; Player Props provides the full probability/EV breakdown; Sims independently corroborates verified MLB pitcher-K distributions; Audit shows calibration and champion/challenger evidence.
             </p>
           </div>
           <div className="flex flex-col sm:flex-row lg:flex-col gap-2 min-w-[220px]">
+            <button onClick={() => onSelectTab('win-probability')} className="rounded-lg bg-cyan-400 px-4 py-2.5 text-sm font-black text-slate-950 hover:bg-cyan-300 flex items-center justify-center gap-2">
+              <Target className="h-4 w-4" /> ML / Spread / Totals
+            </button>
             <button onClick={() => onSelectTab('props')} className="rounded-lg bg-emerald-500 px-4 py-2.5 text-sm font-black text-slate-950 hover:bg-emerald-400 flex items-center justify-center gap-2">
               <Layers className="h-4 w-4" /> Find Qualified Props
             </button>

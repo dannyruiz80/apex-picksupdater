@@ -30,7 +30,9 @@ interface PicksViewProps {
   errorMessage: string | null;
   onRefresh: () => void;
   onSelectGame?: (game: NormalizedApexGame) => void;
+  onOpenWinProbability?: () => void;
 }
+
 
 const SPORT_FILTERS: Array<{ id: ApexSportFilter; label: string; badge?: string }> = [
   { id: 'ALL', label: 'All Sports' },
@@ -54,6 +56,7 @@ export const PicksView: React.FC<PicksViewProps> = ({
   errorMessage,
   onRefresh,
   onSelectGame,
+  onOpenWinProbability,
 }) => {
   const [tennisTourFilter, setTennisTourFilter] = useState<TennisTourFilter>('ALL');
   const [selectedGameForMarkets, setSelectedGameForMarkets] = useState<NormalizedApexGame | null>(null);
@@ -234,8 +237,18 @@ export const PicksView: React.FC<PicksViewProps> = ({
           </p>
         </div>
 
-        {/* Sport Filters Bar */}
-        <div className="flex flex-wrap items-center gap-1.5 rounded-lg border border-slate-800 bg-[#090d16] p-1">
+        <div className="flex flex-col sm:flex-row sm:items-center gap-2">
+          {onOpenWinProbability && (
+            <button
+              type="button"
+              onClick={onOpenWinProbability}
+              className="rounded-lg border border-cyan-500/35 bg-cyan-500/10 px-3 py-2 text-xs font-black text-cyan-200 hover:bg-cyan-500/20"
+            >
+              Win Probability · ML / Spread / Totals
+            </button>
+          )}
+          {/* Sport Filters Bar */}
+          <div className="flex flex-wrap items-center gap-1.5 rounded-lg border border-slate-800 bg-[#090d16] p-1">
           {SPORT_FILTERS.map((s) => {
             const isActive = selectedSport === s.id;
             return (
@@ -255,6 +268,7 @@ export const PicksView: React.FC<PicksViewProps> = ({
               </button>
             );
           })}
+          </div>
         </div>
       </div>
 
