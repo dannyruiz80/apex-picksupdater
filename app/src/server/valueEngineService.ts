@@ -67,6 +67,7 @@ export class ValueEngineService {
     bySport: {
       MLB: { evaluations: 0, qualifies: 0, noBet: 0 },
       NFL: { evaluations: 0, qualifies: 0, noBet: 0 },
+      NCAAF: { evaluations: 0, qualifies: 0, noBet: 0 },
       NBA: { evaluations: 0, qualifies: 0, noBet: 0 },
       WNBA: { evaluations: 0, qualifies: 0, noBet: 0 },
       NHL: { evaluations: 0, qualifies: 0, noBet: 0 },

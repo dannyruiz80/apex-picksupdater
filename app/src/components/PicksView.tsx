@@ -39,6 +39,7 @@ const SPORT_FILTERS: Array<{ id: ApexSportFilter; label: string; badge?: string 
   { id: 'ALL', label: 'All Sports' },
   { id: 'MLB', label: 'MLB' },
   { id: 'NFL', label: 'NFL' },
+  { id: 'NCAAF', label: 'NCAAF' },
   { id: 'NBA', label: 'NBA' },
   { id: 'WNBA', label: 'WNBA' },
   { id: 'NHL', label: 'NHL' },
@@ -96,7 +97,9 @@ export const PicksView: React.FC<PicksViewProps> = ({
             const future = selectedDate > today;
             if (selectedSport === 'ALL') return 48;
             if (selectedSport === 'TENNIS') return future ? 30 : 24;
-            return future ? 12 : 10;
+            if (selectedSport === 'NFL') return 20;
+            if (selectedSport === 'NCAAF') return 24;
+            return 20;
           })(),
         }),
       });
@@ -219,7 +222,7 @@ export const PicksView: React.FC<PicksViewProps> = ({
       return null;
     }
 
-    if (game.sport === 'NFL' || game.sport === 'NBA' || game.sport === 'WNBA') {
+    if (game.sport === 'NFL' || game.sport === 'NCAAF' || game.sport === 'NBA' || game.sport === 'WNBA') {
       if (game.period !== null && game.period !== undefined) {
         const qName = game.period > 4 ? `OT${game.period - 4 > 1 ? game.period - 4 : ''}` : `Q${game.period}`;
         return game.displayClock ? `${qName} (${game.displayClock})` : qName;
@@ -241,7 +244,7 @@ export const PicksView: React.FC<PicksViewProps> = ({
               <span>Picks & Decision Engine</span>
             </h2>
             <span className="rounded-md border border-emerald-500/30 bg-emerald-500/10 px-2 py-0.5 text-xs font-semibold text-emerald-400 font-mono">
-              STAGE 2C TENNIS ACTIVE
+              {selectedSport === 'ALL' ? 'MULTI-SPORT DECISION MODE' : `${selectedSport} PRODUCTION MODE`}
             </span>
           </div>
           <p className="text-xs sm:text-sm text-slate-400 mt-1">
@@ -292,20 +295,6 @@ export const PicksView: React.FC<PicksViewProps> = ({
           </div>
         </div>
       </div>
-
-      <DecisionBoardPanel
-        board={decisionBoard}
-        loading={decisionBoardLoading}
-        error={decisionBoardError}
-        onScan={scanDecisionBoard}
-        onOpenPick={(eventId, pickType) => {
-          const game = rawGames.find((g) => g.eventId === eventId);
-          if (!game) return;
-          if (pickType === 'GAME_MARKET') setSelectedGameForMarkets(game);
-          else if (onSelectGame) onSelectGame(game);
-        }}
-        scanLabel="Find Best Picks"
-      />
 
       {/* Date Control Toolbar & Tennis Tour Sub-Filter */}
       <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-slate-800 bg-[#0d1322] p-3.5">
@@ -421,6 +410,21 @@ export const PicksView: React.FC<PicksViewProps> = ({
           </button>
         </div>
       </div>
+
+
+      <DecisionBoardPanel
+        board={decisionBoard}
+        loading={decisionBoardLoading}
+        error={decisionBoardError}
+        onScan={scanDecisionBoard}
+        onOpenPick={(eventId, pickType) => {
+          const game = rawGames.find((g) => g.eventId === eventId);
+          if (!game) return;
+          if (pickType === 'GAME_MARKET') setSelectedGameForMarkets(game);
+          else if (onSelectGame) onSelectGame(game);
+        }}
+        scanLabel="Find Best Picks"
+      />
 
       {/* Decision Integrity Banner */}
       <div className="rounded-xl border border-emerald-500/20 bg-emerald-950/10 p-3.5 text-xs text-slate-400 flex items-start gap-2.5">
@@ -672,7 +676,7 @@ export const PicksView: React.FC<PicksViewProps> = ({
                 );
               }
 
-              // Standard Team Sport Card (MLB, NFL, NBA, WNBA, NHL, SOCCER)
+              // Standard Team Sport Card (MLB, NFL, NCAAF, NBA, WNBA, NHL, SOCCER)
               return (
                 <div
                   key={`${game.sport}-${game.eventId}`}

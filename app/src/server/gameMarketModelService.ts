@@ -8,6 +8,7 @@ import {
 } from '../types';
 import { gameTeamHistoryService, TeamHistorySummary } from './gameTeamHistoryService';
 import { gameMarketContextService, GameMarketContextV2 } from './gameMarketContextService.js';
+import { buildContextChallengerV2, ContextChallengerV2 } from './contextLearningV2Service.js';
 
 export type GameModelSelectionSide = 'HOME' | 'AWAY' | 'DRAW' | 'OVER' | 'UNDER';
 export type GameModelValidationStatus = 'EARLY_EVIDENCE';
@@ -38,6 +39,7 @@ export interface GameMarketProjectionV1 {
   homeHistory: TeamHistorySummary;
   awayHistory: TeamHistorySummary;
   contextV2: GameMarketContextV2 | null;
+  contextChallengerV2: ContextChallengerV2 | null;
   shadowModelVersion: 'APEX_GAME_MARKET_V2_SHADOW' | null;
   shadowExpectedHomeScore: number | null;
   shadowExpectedAwayScore: number | null;
@@ -188,6 +190,7 @@ function sportUncertaintyFloor(sport: ApexSport): { margin: number; total: numbe
   switch (sport) {
     case 'MLB': return { margin: 3.0, total: 4.2 };
     case 'NFL': return { margin: 10.5, total: 12.0 };
+    case 'NCAAF': return { margin: 14.0, total: 17.5 };
     case 'NBA': return { margin: 11.5, total: 15.0 };
     case 'WNBA': return { margin: 10.5, total: 13.5 };
     case 'NHL': return { margin: 2.0, total: 2.2 };
@@ -206,6 +209,69 @@ function expectedScores(home: TeamHistorySummary, away: TeamHistorySummary): { h
   return {
     home: Math.max(0.01, (homeOff + awayDef) / 2),
     away: Math.max(0.01, (awayOff + homeDef) / 2),
+  };
+}
+
+export function buildFootballExpectedScores(
+  home: TeamHistorySummary,
+  away: TeamHistorySummary,
+  sport: 'NFL' | 'NCAAF',
+): { home: number; away: number; recentBlendWeight: number } | null {
+  const base = expectedScores(home, away);
+  if (!base) return null;
+  if (home.records.length < 5 || away.records.length < 5) return { ...base, recentBlendWeight: 0 };
+  const avg = (xs: number[]) => xs.reduce((a,b)=>a+b,0) / xs.length;
+  const h5 = home.records.slice(0,5), a5 = away.records.slice(0,5);
+  const recentHome = (avg(h5.map(r=>r.pointsFor)) + avg(a5.map(r=>r.pointsAgainst))) / 2;
+  const recentAway = (avg(a5.map(r=>r.pointsFor)) + avg(h5.map(r=>r.pointsAgainst))) / 2;
+  // Football gets only a bounded recent-five contribution. NFL receives slightly more weight because
+  // year-to-year roster continuity is higher; NCAAF stays more conservative because roster/coaching
+  // turnover can make prior-season history less representative. No sportsbook number enters this blend.
+  const minN = Math.min(home.sampleCount, away.sampleCount);
+  const recentBlendWeight = sport === 'NFL' ? (minN >= 12 ? 0.16 : 0.10) : (minN >= 10 ? 0.12 : 0.08);
+  const cap = sport === 'NFL' ? 7 : 10;
+  const boundedRecentHome = base.home + clampValue(recentHome - base.home, -cap, cap);
+  const boundedRecentAway = base.away + clampValue(recentAway - base.away, -cap, cap);
+  return {
+    home: Math.max(0.01, base.home * (1 - recentBlendWeight) + boundedRecentHome * recentBlendWeight),
+    away: Math.max(0.01, base.away * (1 - recentBlendWeight) + boundedRecentAway * recentBlendWeight),
+    recentBlendWeight,
+  };
+}
+
+export interface FootballHistoricalProjectionCore {
+  sport: 'NFL' | 'NCAAF';
+  reliabilityTier: SampleReliabilityTier;
+  expectedHomeScore: number;
+  expectedAwayScore: number;
+  expectedMargin: number;
+  expectedTotal: number;
+  marginStdDev: number;
+  totalStdDev: number;
+  homeWinProbability: number;
+  awayWinProbability: number;
+  recentBlendWeight: number;
+}
+
+export function buildFootballHistoricalProjection(
+  sport: 'NFL' | 'NCAAF',
+  home: TeamHistorySummary,
+  away: TeamHistorySummary,
+): FootballHistoricalProjectionCore | null {
+  const scores = buildFootballExpectedScores(home, away, sport);
+  if (!scores) return null;
+  const expectedMargin = scores.home - scores.away;
+  const expectedTotal = scores.home + scores.away;
+  const floor = sportUncertaintyFloor(sport);
+  const marginObserved = mean([home.marginStdDev, away.marginStdDev].filter((v): v is number => v !== null));
+  const totalObserved = mean([home.totalStdDev, away.totalStdDev].filter((v): v is number => v !== null));
+  const marginStdDev = Math.max(floor.margin, marginObserved ?? floor.margin);
+  const totalStdDev = Math.max(floor.total, totalObserved ?? floor.total);
+  const homeWinProbability = normalCdf(expectedMargin / marginStdDev);
+  return {
+    sport, reliabilityTier: reliability(home, away), expectedHomeScore: scores.home, expectedAwayScore: scores.away,
+    expectedMargin, expectedTotal, marginStdDev, totalStdDev, homeWinProbability, awayWinProbability: 1-homeWinProbability,
+    recentBlendWeight: scores.recentBlendWeight,
   };
 }
 
@@ -579,14 +645,43 @@ function applyCrossMarketConsistency(candidates: GameMarketCandidateV1[]): void 
 
 function clampValue(x: number, lo: number, hi: number): number { return Math.max(lo, Math.min(hi, x)); }
 
+export function buildMlbTotalContextAdjustment(context: GameMarketContextV2): number {
+  if (!context.mlb) return 0;
+  const signals = [
+    context.mlb.starterTotalRunSignal,
+    context.mlb.bullpenTotalRunSignal,
+    context.mlb.weatherTotalRunSignal,
+  ].filter((v): v is number => v !== null && Number.isFinite(v));
+  return signals.length ? clampValue(signals.reduce((a,b)=>a+b,0), -1.25, 1.25) : 0;
+}
+
+export function buildSoccerTotalContextAdjustment(baseTotal: number, context: GameMarketContextV2): number {
+  const soccer = context.soccer;
+  if (soccer) {
+    const xgParts = [
+      soccer.homeRecent5XgFor, soccer.homeRecent5XgAgainst,
+      soccer.awayRecent5XgFor, soccer.awayRecent5XgAgainst,
+    ].filter((v): v is number => v !== null && Number.isFinite(v));
+    if (xgParts.length >= 4) {
+      const projectedXgTotal = ((soccer.homeRecent5XgFor! + soccer.awayRecent5XgAgainst!) / 2) + ((soccer.awayRecent5XgFor! + soccer.homeRecent5XgAgainst!) / 2);
+      return clampValue((projectedXgTotal - baseTotal) * 0.35, -0.70, 0.70);
+    }
+  }
+  const recentTotals = [context.homeRecent5Total, context.awayRecent5Total].filter((v): v is number => v !== null && Number.isFinite(v));
+  if (!recentTotals.length) return 0;
+  const recentTotal = recentTotals.reduce((a,b)=>a+b,0) / recentTotals.length;
+  return clampValue((recentTotal - baseTotal) * 0.18, -0.55, 0.55);
+}
+
 function buildShadowProjection(
   game: NormalizedApexGame,
   baseHome: number,
   baseAway: number,
   marginStdDev: number,
   context: GameMarketContextV2,
+  challenger: ContextChallengerV2 | null,
 ): { home: number; away: number; margin: number; total: number; homeWin: number; awayWin: number } | null {
-  if (game.sport !== 'MLB' && game.sport !== 'NFL') return null;
+  if (!['MLB', 'NFL', 'NCAAF', 'WNBA', 'SOCCER'].includes(game.sport)) return null;
   let home = baseHome;
   let away = baseAway;
 
@@ -609,31 +704,43 @@ function buildShadowProjection(
     }
   }
 
-  if (game.sport === 'NFL') {
-    const h5 = context.nfl?.homeRecent5Margin ?? null;
-    const a5 = context.nfl?.awayRecent5Margin ?? null;
-    const hs = context.nfl?.homeStrengthIndex ?? null;
-    const as = context.nfl?.awayStrengthIndex ?? null;
+  // Soccer total movement is now supplied by the universal Context Learning V2 challenger below.
+
+  if (game.sport === 'NFL' || game.sport === 'NCAAF') {
+    const football = game.sport === 'NFL' ? context.nfl : context.ncaaf;
+    const h5 = football?.homeRecent5Margin ?? null;
+    const a5 = football?.awayRecent5Margin ?? null;
+    const hs = football?.homeStrengthIndex ?? null;
+    const as = football?.awayStrengthIndex ?? null;
     let shift = 0;
     if (hs !== null && as !== null && h5 !== null && a5 !== null) {
       const formDifferential = (hs - as) - ((h5 - a5) * 0.25);
       shift += clampValue(0.12 * formDifferential, -2.5, 2.5);
     }
-    const hr = context.nfl?.homeRestDays ?? null;
-    const ar = context.nfl?.awayRestDays ?? null;
+    const hr = football?.homeRestDays ?? null;
+    const ar = football?.awayRestDays ?? null;
     if (hr !== null && ar !== null) shift += clampValue((hr - ar) * 0.12, -1.25, 1.25);
-    const hNetYpp = context.nfl?.homeNetYardsPerPlay ?? null;
-    const aNetYpp = context.nfl?.awayNetYardsPerPlay ?? null;
+    const hNetYpp = football?.homeNetYardsPerPlay ?? null;
+    const aNetYpp = football?.awayNetYardsPerPlay ?? null;
     if (hNetYpp !== null && aNetYpp !== null) shift += clampValue((hNetYpp - aNetYpp) * 0.8, -2.0, 2.0);
-    const hTom = context.nfl?.homeTurnoverMarginPerGame ?? null;
-    const aTom = context.nfl?.awayTurnoverMarginPerGame ?? null;
+    const hTom = football?.homeTurnoverMarginPerGame ?? null;
+    const aTom = football?.awayTurnoverMarginPerGame ?? null;
     if (hTom !== null && aTom !== null) shift += clampValue((hTom - aTom) * 0.35, -1.5, 1.5);
     home = Math.max(0.01, home + shift / 2);
     away = Math.max(0.01, away - shift / 2);
   }
 
+  if (challenger && Number.isFinite(challenger.totalAdjustment)) {
+    home = Math.max(0.01, home + challenger.totalAdjustment / 2);
+    away = Math.max(0.01, away + challenger.totalAdjustment / 2);
+  }
+
   const margin = home - away;
   const total = home + away;
+  if (game.sport === 'SOCCER') {
+    const probs = soccerOutcomeProbabilities(home, away);
+    return { home, away, margin, total, homeWin: probs.home, awayWin: probs.away };
+  }
   const homeWin = normalCdf(margin / marginStdDev);
   return { home, away, margin, total, homeWin, awayWin: 1 - homeWin };
 }
@@ -649,7 +756,10 @@ export class GameMarketModelService {
     const pointInTimeValid = homeHistory.pointInTimeValid && awayHistory.pointInTimeValid;
     const unavailable = game.sport === 'TENNIS' || homeHistory.status !== 'AVAILABLE' || awayHistory.status !== 'AVAILABLE' || !pointInTimeValid;
     const wnbaScores = !unavailable && game.sport === 'WNBA' ? buildWnbaExpectedScores(homeHistory, awayHistory) : null;
-    const scores = unavailable ? null : (wnbaScores ?? expectedScores(homeHistory, awayHistory));
+    const footballScores = !unavailable && (game.sport === 'NFL' || game.sport === 'NCAAF')
+      ? buildFootballExpectedScores(homeHistory, awayHistory, game.sport)
+      : null;
+    const scores = unavailable ? null : (wnbaScores ?? footballScores ?? expectedScores(homeHistory, awayHistory));
     const notes = [
       'Probability model uses public historical team results only; sportsbook odds do not enter the forecast.',
       'Current V1 game model is prospective/early-evidence and will be calibrated from newly logged predictions.',
@@ -659,6 +769,11 @@ export class GameMarketModelService {
     if (game.sport === 'WNBA' && wnbaScores) {
       notes.push(`WNBA production scoring projection uses a ${(wnbaScores.recentBlendWeight * 100).toFixed(0)}% bounded recent-five blend on top of the point-in-time season/venue baseline.`);
       notes.push('WNBA market prices do not enter expected score or raw win probability; odds remain decision/economic inputs only.');
+    }
+    if ((game.sport === 'NFL' || game.sport === 'NCAAF') && footballScores) {
+      notes.push(`${game.sport} production scoring projection uses a ${(footballScores.recentBlendWeight * 100).toFixed(0)}% bounded recent-five blend on top of the point-in-time season/venue baseline.`);
+      notes.push(`${game.sport} sportsbook prices do not enter expected score or raw win probability; odds remain decision/economic inputs only.`);
+      if (game.sport === 'NCAAF') notes.push('NCAAF prior-season carryover remains conservatively weighted because college rosters/coaching contexts can change materially between seasons.');
     }
 
     if (!scores) {
@@ -670,7 +785,7 @@ export class GameMarketModelService {
         homeSampleCount: homeHistory.sampleCount, awaySampleCount: awayHistory.sampleCount,
         expectedHomeScore: null, expectedAwayScore: null, expectedMargin: null, expectedTotal: null,
         marginStdDev: null, totalStdDev: null, homeWinProbability: null, awayWinProbability: null, drawProbability: null,
-        homeHistory, awayHistory, contextV2, shadowModelVersion: null, shadowExpectedHomeScore: null, shadowExpectedAwayScore: null,
+        homeHistory, awayHistory, contextV2, contextChallengerV2: null, shadowModelVersion: null, shadowExpectedHomeScore: null, shadowExpectedAwayScore: null,
         shadowExpectedMargin: null, shadowExpectedTotal: null, shadowHomeWinProbability: null, shadowAwayWinProbability: null, notes,
       };
     }
@@ -700,8 +815,9 @@ export class GameMarketModelService {
       awayWinProbability = 1 - homeWinProbability;
     }
 
-    const shadow = buildShadowProjection(game, scores.home, scores.away, marginStdDev, contextV2);
-    if (shadow) notes.push('APEX_GAME_MARKET_V2_SHADOW is audit-only and cannot promote or override a V1 production recommendation.');
+    const contextChallengerV2 = buildContextChallengerV2(game, expectedTotal, contextV2);
+    const shadow = buildShadowProjection(game, scores.home, scores.away, marginStdDev, contextV2, contextChallengerV2);
+    if (shadow) notes.push('APEX_GAME_MARKET_V2_SHADOW is audit-only and cannot promote or override a V1 production recommendation. Context Learning V2 freezes totals features across MLB, Soccer, WNBA, NFL and NCAAF and grades them postgame before any future promotion.');
 
     return {
       modelVersion: 'APEX_GAME_MARKET_V1', generatedAt: new Date().toISOString(), asOf: game.startTime,
@@ -710,7 +826,7 @@ export class GameMarketModelService {
       homeSampleCount: homeHistory.sampleCount, awaySampleCount: awayHistory.sampleCount,
       expectedHomeScore: scores.home, expectedAwayScore: scores.away, expectedMargin, expectedTotal,
       marginStdDev, totalStdDev, homeWinProbability, awayWinProbability, drawProbability,
-      homeHistory, awayHistory, contextV2,
+      homeHistory, awayHistory, contextV2, contextChallengerV2,
       shadowModelVersion: shadow ? 'APEX_GAME_MARKET_V2_SHADOW' : null,
       shadowExpectedHomeScore: shadow?.home ?? null, shadowExpectedAwayScore: shadow?.away ?? null,
       shadowExpectedMargin: shadow?.margin ?? null, shadowExpectedTotal: shadow?.total ?? null,
@@ -778,14 +894,16 @@ export class GameMarketModelService {
         if (best.marketType === 'MONEYLINE') {
           if (side === 'HOME') shadowModelProbability = model.shadowHomeWinProbability;
           else if (side === 'AWAY') shadowModelProbability = model.shadowAwayWinProbability;
-        } else if (point !== null && game.sport !== 'SOCCER') {
-          const sh = normalLineProbability(
-            best.marketType === 'TOTAL' ? model.shadowExpectedTotal : model.shadowExpectedMargin,
-            best.marketType === 'TOTAL' ? model.totalStdDev : model.marginStdDev,
-            best.marketType,
-            side,
-            point,
-          );
+        } else if (point !== null) {
+          const sh = game.sport === 'SOCCER'
+            ? soccerLineProbability(model.shadowExpectedHomeScore!, model.shadowExpectedAwayScore!, best.marketType, side, point)
+            : normalLineProbability(
+                best.marketType === 'TOTAL' ? model.shadowExpectedTotal : model.shadowExpectedMargin,
+                best.marketType === 'TOTAL' ? model.totalStdDev : model.marginStdDev,
+                best.marketType,
+                side,
+                point,
+              );
           shadowModelProbability = sh.win;
         }
       }

@@ -10,9 +10,9 @@ export interface VersionResponse {
   timestamp: string;
 }
 
-export type ApexSport = 'MLB' | 'NFL' | 'NBA' | 'WNBA' | 'NHL' | 'SOCCER' | 'TENNIS';
+export type ApexSport = 'MLB' | 'NFL' | 'NCAAF' | 'NBA' | 'WNBA' | 'NHL' | 'SOCCER' | 'TENNIS';
 
-export type ApexSportFilter = 'ALL' | 'MLB' | 'NFL' | 'NBA' | 'WNBA' | 'NHL' | 'SOCCER' | 'TENNIS';
+export type ApexSportFilter = 'ALL' | 'MLB' | 'NFL' | 'NCAAF' | 'NBA' | 'WNBA' | 'NHL' | 'SOCCER' | 'TENNIS';
 
 export type TennisTour = 'ATP' | 'WTA';
 export type TennisMatchFormat = 'SINGLES' | 'DOUBLES' | 'OTHER';
@@ -243,6 +243,7 @@ export interface MultiSportAuditDiagnostics {
   sports: {
     MLB: SportAuditDiagnostic;
     NFL: SportAuditDiagnostic;
+    NCAAF: SportAuditDiagnostic;
     NBA: SportAuditDiagnostic;
     WNBA: SportAuditDiagnostic;
     NHL: SportAuditDiagnostic;
@@ -1762,6 +1763,9 @@ export interface DecisionBoardPick {
   marketConsensusProbability?: number | null;
   edgePercentagePoints: number;
   expectedValuePercent: number;
+  suggestedStakeUnits?: number;
+  bankrollStake?: BankrollStakePreview | null;
+  stakeSizingMethod?: 'APEX_RISK_TIER_V1' | null;
   reliabilityTier: SampleReliabilityTier;
   marketDepth?: number | null;
   modelVersion: string;

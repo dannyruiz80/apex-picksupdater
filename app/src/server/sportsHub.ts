@@ -10,6 +10,7 @@ import {
 } from '../types.js';
 import { fetchMlbSchedule, fetchMlbLiveScores, mlbAuditState } from './mlbAdapter.js';
 import { fetchNflSchedule, fetchNflLiveScores, nflAuditState } from './nflAdapter.js';
+import { fetchNcaafSchedule, fetchNcaafLiveScores, ncaafAuditState } from './ncaafAdapter.js';
 import { fetchNbaSchedule, fetchNbaLiveScores, nbaAuditState } from './nbaAdapter.js';
 import { fetchWnbaSchedule, fetchWnbaLiveScores, wnbaAuditState } from './wnbaAdapter.js';
 import { fetchNhlSchedule, fetchNhlLiveScores, nhlAuditState } from './nhlAdapter.js';
@@ -17,7 +18,7 @@ import { fetchSoccerSchedule, fetchSoccerLiveScores, soccerAuditState } from './
 import { fetchTennisSchedule, fetchTennisLiveScores, tennisAuditState } from './tennisAdapter.js';
 import { sanitizeScheduleDate } from './shared.js';
 
-export const ALL_SPORTS: ApexSport[] = ['MLB', 'NFL', 'NBA', 'WNBA', 'NHL', 'SOCCER', 'TENNIS'];
+export const ALL_SPORTS: ApexSport[] = ['MLB', 'NFL', 'NCAAF', 'NBA', 'WNBA', 'NHL', 'SOCCER', 'TENNIS'];
 
 export async function fetchSchedule(
   sportFilter: ApexSportFilter = 'ALL',
@@ -44,6 +45,18 @@ export async function fetchSchedule(
     const res = await fetchNflSchedule(scheduleDate);
     return {
       sport: 'NFL',
+      scheduleDate,
+      source: 'ESPN',
+      lastVerifiedAt: res.lastVerifiedAt,
+      count: res.games.length,
+      games: res.games,
+    };
+  }
+
+  if (sportFilter === 'NCAAF') {
+    const res = await fetchNcaafSchedule(scheduleDate);
+    return {
+      sport: 'NCAAF',
       scheduleDate,
       source: 'ESPN',
       lastVerifiedAt: res.lastVerifiedAt,
@@ -112,10 +125,11 @@ export async function fetchSchedule(
     };
   }
 
-  // Multi-sport query (ALL): fetch all 7 sports concurrently
-  const [mlbRes, nflRes, nbaRes, wnbaRes, nhlRes, soccerRes, tennisRes] = await Promise.allSettled([
+  // Multi-sport query (ALL): fetch all 8 sports concurrently
+  const [mlbRes, nflRes, ncaafRes, nbaRes, wnbaRes, nhlRes, soccerRes, tennisRes] = await Promise.allSettled([
     fetchMlbSchedule(scheduleDate),
     fetchNflSchedule(scheduleDate),
+    fetchNcaafSchedule(scheduleDate),
     fetchNbaSchedule(scheduleDate),
     fetchWnbaSchedule(scheduleDate),
     fetchNhlSchedule(scheduleDate),
@@ -127,6 +141,7 @@ export async function fetchSchedule(
 
   if (mlbRes.status === 'fulfilled') allGames.push(...mlbRes.value.games);
   if (nflRes.status === 'fulfilled') allGames.push(...nflRes.value.games);
+  if (ncaafRes.status === 'fulfilled') allGames.push(...ncaafRes.value.games);
   if (nbaRes.status === 'fulfilled') allGames.push(...nbaRes.value.games);
   if (wnbaRes.status === 'fulfilled') allGames.push(...wnbaRes.value.games);
   if (nhlRes.status === 'fulfilled') allGames.push(...nhlRes.value.games);
@@ -168,6 +183,18 @@ export async function fetchLiveScores(
     const res = await fetchNflLiveScores();
     return {
       sport: 'NFL',
+      source: 'ESPN',
+      lastVerifiedAt: res.lastVerifiedAt,
+      count: res.count,
+      liveCount: res.liveCount,
+      games: res.games,
+    };
+  }
+
+  if (sportFilter === 'NCAAF') {
+    const res = await fetchNcaafLiveScores();
+    return {
+      sport: 'NCAAF',
       source: 'ESPN',
       lastVerifiedAt: res.lastVerifiedAt,
       count: res.count,
@@ -237,9 +264,10 @@ export async function fetchLiveScores(
   }
 
   // ALL sports live score polling
-  const [mlbRes, nflRes, nbaRes, wnbaRes, nhlRes, soccerRes, tennisRes] = await Promise.allSettled([
+  const [mlbRes, nflRes, ncaafRes, nbaRes, wnbaRes, nhlRes, soccerRes, tennisRes] = await Promise.allSettled([
     fetchMlbLiveScores(),
     fetchNflLiveScores(),
+    fetchNcaafLiveScores(),
     fetchNbaLiveScores(),
     fetchWnbaLiveScores(),
     fetchNhlLiveScores(),
@@ -251,6 +279,7 @@ export async function fetchLiveScores(
 
   if (mlbRes.status === 'fulfilled') allUpdates.push(...mlbRes.value.games);
   if (nflRes.status === 'fulfilled') allUpdates.push(...nflRes.value.games);
+  if (ncaafRes.status === 'fulfilled') allUpdates.push(...ncaafRes.value.games);
   if (nbaRes.status === 'fulfilled') allUpdates.push(...nbaRes.value.games);
   if (wnbaRes.status === 'fulfilled') allUpdates.push(...wnbaRes.value.games);
   if (nhlRes.status === 'fulfilled') allUpdates.push(...nhlRes.value.games);
@@ -273,6 +302,7 @@ export function getMultiSportAuditDiagnostics(): MultiSportAuditDiagnostics {
   const sportsDiagnostics = {
     MLB: mlbAuditState,
     NFL: nflAuditState,
+    NCAAF: ncaafAuditState,
     NBA: nbaAuditState,
     WNBA: wnbaAuditState,
     NHL: nhlAuditState,

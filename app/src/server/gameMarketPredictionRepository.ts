@@ -3,6 +3,7 @@ import path from 'path';
 import crypto from 'crypto';
 import { ApexSport, GameCalibrationProfile, MarketType, NormalizedApexGame } from '../types';
 import { GameMarketEvaluationV1 } from './gameMarketModelService';
+import { contextFeatureWeightDiagnostics } from './contextLearningV2Service.js';
 
 export type GameMarketGradingOutcome = 'WIN' | 'LOSS' | 'PUSH';
 
@@ -24,6 +25,25 @@ export interface GameMarketPredictionSnapshotV1 {
   expectedAwayScore: number | null;
   expectedMargin: number | null;
   expectedTotal: number | null;
+  contextAudit?: {
+    contextVersion: string;
+    learningVersion?: 'APEX_CONTEXT_LEARNING_V2' | string;
+    learningIdentity?: string;
+    featureHash?: string | null;
+    observedAt: string;
+    contextStatus: string;
+    baseExpectedTotal: number | null;
+    challengerExpectedTotal: number | null;
+    challengerDeltaRunsGoals: number | null;
+    frozenPregameContext: unknown;
+    featureContributions?: any[];
+    interactionContributions?: any[];
+    postgameFeatureAttribution?: Array<{ key: string; label: string; family: string; contribution: number; singleFeatureError: number; errorDeltaVsBase: number; outcome: 'HELPED' | 'HURT' | 'NEUTRAL' }>;
+    actualTotal?: number | null;
+    baseAbsoluteTotalError?: number | null;
+    challengerAbsoluteTotalError?: number | null;
+    challengerImproved?: boolean | null;
+  } | null;
   candidates: Array<{
     candidateId: string; marketType: string; side: string; selectionLabel: string; point: number | null;
     sportsbook: string; oddsAmerican: number; quoteTimestamp: string; marketDepth: number; modelProbability: number;
@@ -97,6 +117,30 @@ export class GameMarketPredictionRepository {
       modelVersion:'APEX_GAME_MARKET_V1',modelValidationStatus:'EARLY_EVIDENCE',pointInTimeValid:evaluation.model.pointInTimeValid,
       reliabilityTier:evaluation.model.reliabilityTier,expectedHomeScore:evaluation.model.expectedHomeScore,expectedAwayScore:evaluation.model.expectedAwayScore,
       expectedMargin:evaluation.model.expectedMargin,expectedTotal:evaluation.model.expectedTotal,
+      contextAudit: (() => {
+        const contextSports = new Set(['MLB','SOCCER','WNBA','NFL','NCAAF']);
+        const challenger = evaluation.model.contextChallengerV2;
+        // Only the earliest frozen pregame context per canonical event is learning evidence.
+        // Later price refreshes can still be stored as market snapshots but cannot multiply the context sample.
+        const priorContext = rows.find((r) => r.eventId === game.eventId && r.contextAudit);
+        if (!contextSports.has(game.sport) || !evaluation.model.contextV2 || !challenger || priorContext) return null;
+        return {
+          contextVersion: evaluation.model.contextV2.contextVersion,
+          learningVersion: 'APEX_CONTEXT_LEARNING_V2',
+          learningIdentity: `${game.eventId}|TOTAL|FIRST_PREGAME`,
+          featureHash: challenger.featureHash,
+          observedAt: evaluation.model.contextV2.observedAt,
+          contextStatus: evaluation.model.contextV2.status,
+          baseExpectedTotal: evaluation.model.expectedTotal,
+          challengerExpectedTotal: challenger.challengerExpectedTotal,
+          challengerDeltaRunsGoals: challenger.totalAdjustment,
+          frozenPregameContext: evaluation.model.contextV2,
+          featureContributions: challenger.features,
+          interactionContributions: challenger.interactions,
+          postgameFeatureAttribution: [],
+          actualTotal: null, baseAbsoluteTotalError: null, challengerAbsoluteTotalError: null, challengerImproved: null,
+        };
+      })(),
       candidates:relevant.map(c=>({candidateId:c.candidateId,marketType:c.marketType,side:c.side,selectionLabel:c.selectionLabel,point:c.point,
         sportsbook:c.sportsbook,oddsAmerican:c.oddsAmerican,quoteTimestamp:c.quoteTimestamp,marketDepth:c.marketDepth,modelProbability:c.modelProbability,
         decisionProbability:c.decisionProbability,calibrationAdjustedProbability:c.calibrationAdjustedProbability,prospectiveCalibrationAdjustmentPP:c.prospectiveCalibrationAdjustmentPP,
@@ -119,6 +163,27 @@ export class GameMarketPredictionRepository {
       else if(c.marketType==='TOTAL'&&c.point!==null){ result=c.side==='OVER'?total-c.point:c.point-total; }
       const outcome:GameMarketGradingOutcome=result>0?'WIN':result<0?'LOSS':'PUSH'; c.outcome=outcome;
       c.profitUnits=outcome==='WIN'?decimalFromAmerican(c.oddsAmerican)-1:outcome==='LOSS'?-1:0;
+    }
+    if (row.contextAudit) {
+      row.contextAudit.actualTotal = total;
+      row.contextAudit.baseAbsoluteTotalError = row.contextAudit.baseExpectedTotal === null ? null : Math.abs(row.contextAudit.baseExpectedTotal - total);
+      row.contextAudit.challengerAbsoluteTotalError = row.contextAudit.challengerExpectedTotal === null ? null : Math.abs(row.contextAudit.challengerExpectedTotal - total);
+      row.contextAudit.challengerImproved = row.contextAudit.baseAbsoluteTotalError === null || row.contextAudit.challengerAbsoluteTotalError === null
+        ? null : row.contextAudit.challengerAbsoluteTotalError < row.contextAudit.baseAbsoluteTotalError;
+      const base = row.contextAudit.baseExpectedTotal;
+      if (base !== null) {
+        const featureRows = [...(row.contextAudit.featureContributions || []), ...(row.contextAudit.interactionContributions || [])];
+        row.contextAudit.postgameFeatureAttribution = featureRows
+          .filter((f:any) => Number.isFinite(Number(f?.appliedContribution)) && Math.abs(Number(f.appliedContribution)) > 1e-9)
+          .map((f:any) => {
+            const contribution = Number(f.appliedContribution);
+            const singleFeatureError = Math.abs(base + contribution - total);
+            const baseError = Math.abs(base - total);
+            const delta = baseError - singleFeatureError;
+            return { key: String(f.key || 'unknown'), label: String(f.label || f.key || 'Feature'), family: String(f.family || 'OTHER'), contribution,
+              singleFeatureError, errorDeltaVsBase: delta, outcome: Math.abs(delta) < 0.01 ? 'NEUTRAL' : delta > 0 ? 'HELPED' : 'HURT' };
+          });
+      }
     }
     row.gradingStatus='GRADED';row.gradedAt=gradedAt;row.actualHomeScore=homeScore;row.actualAwayScore=awayScore;this.write(rows);return true;
   }
@@ -172,8 +237,52 @@ export class GameMarketPredictionRepository {
       evidenceTier:evidenceTier(n),recommendedModelWeight:recommendedWeight(n,gap,ec,brier)};
   }
 
+
+  getContextLearningStatus() {
+    const supportedSports = ['MLB','SOCCER','WNBA','NFL','NCAAF'] as const;
+    const all = this.getAll()
+      .filter((r) => r.gradingStatus === 'GRADED' && supportedSports.includes(r.sport as any) && r.contextAudit)
+      .sort((a,b) => Date.parse(a.eventStartTime) - Date.parse(b.eventStartTime));
+    const first = new Map<string, GameMarketPredictionSnapshotV1>();
+    for (const row of all) if (!first.has(row.contextAudit?.learningIdentity || row.eventId)) first.set(row.contextAudit?.learningIdentity || row.eventId, row);
+    const rows = [...first.values()];
+    const summarize = (sport?: typeof supportedSports[number]) => {
+      const sample = rows.filter((r) => !sport || r.sport === sport)
+        .filter((r) => r.contextAudit?.baseAbsoluteTotalError !== null && r.contextAudit?.challengerAbsoluteTotalError !== null);
+      const n = sample.length;
+      const baseMae = n ? sample.reduce((sum,r)=>sum+(r.contextAudit!.baseAbsoluteTotalError ?? 0),0)/n : null;
+      const challengerMae = n ? sample.reduce((sum,r)=>sum+(r.contextAudit!.challengerAbsoluteTotalError ?? 0),0)/n : null;
+      const improvementPct = baseMae !== null && baseMae > 0 && challengerMae !== null ? (baseMae - challengerMae) / baseMae : null;
+      const improvedGames = sample.filter(r=>r.contextAudit?.challengerImproved === true).length;
+      const improvementRate = n ? improvedGames / n : null;
+      const recent = sample.slice(-Math.min(20, sample.length));
+      const recentBaseMae = recent.length ? recent.reduce((sum,r)=>sum+(r.contextAudit!.baseAbsoluteTotalError ?? 0),0)/recent.length : null;
+      const recentChallengerMae = recent.length ? recent.reduce((sum,r)=>sum+(r.contextAudit!.challengerAbsoluteTotalError ?? 0),0)/recent.length : null;
+      const recentImprovementPct = recentBaseMae !== null && recentBaseMae > 0 && recentChallengerMae !== null ? (recentBaseMae-recentChallengerMae)/recentBaseMae : null;
+      const promotionEligible = n >= 30 && improvementPct !== null && improvementPct >= 0.03 && (improvementRate ?? 0) >= 0.52 && (recentImprovementPct ?? -1) >= 0;
+      const promotionStatus = n < 30 ? 'COLLECTING' : promotionEligible ? 'PROMOTION_ELIGIBLE' : (improvementPct !== null && improvementPct > 0 ? 'CHALLENGER_LEADING' : 'NO_PROVEN_GAIN');
+      return { sport: sport ?? 'ALL', gradedEvents: n, baseTotalMae: baseMae, challengerTotalMae: challengerMae, improvementPct, improvedGames, improvementRate,
+        recentImprovementPct, promotionEligible, promotionStatus };
+    };
+    const featureLeaderboard = supportedSports.flatMap((sport) => contextFeatureWeightDiagnostics(sport as ApexSport).map((row) => ({ sport, ...row })))
+      .filter((r) => r.evidenceCount > 0)
+      .sort((a,b) => (b.meanErrorGain ?? -999) - (a.meanErrorGain ?? -999))
+      .slice(0, 24);
+    return {
+      version: 'APEX_CONTEXT_LEARNING_V2_1_16',
+      generatedAt: new Date().toISOString(),
+      policy: 'Immutable first-pregame snapshot -> postgame attribution -> chronological walk-forward feature reweighting. Only real completed events count. Learned feature multipliers use earlier results only, are bounded to 0.65x-1.35x, and remain shadow-only. Promotion eligibility requires >=30 graded events, >=3% full-sample MAE gain, >=52% improved games, and non-negative recent-window MAE gain.',
+      overall: summarize(),
+      bySport: supportedSports.map((s) => summarize(s)),
+      featureLeaderboard,
+      totalFrozenPregameSnapshots: this.getAll().filter(r => supportedSports.includes(r.sport as any) && r.contextAudit).length,
+      uniqueLearningSnapshots: rows.length,
+      duplicateLearningSnapshotsSuppressed: Math.max(0, all.length - rows.length),
+    };
+  }
+
   getCalibrationDashboard() {
-    const sports:ApexSport[]=['MLB','NFL','NBA','WNBA','NHL','SOCCER'];
+    const sports:ApexSport[]=['MLB','NFL','NCAAF','NBA','WNBA','NHL','SOCCER'];
     const markets:MarketType[]=['MONEYLINE','SPREAD','TOTAL'];
     return {version:'APEX_GAME_CALIBRATION_LEARNING_V1_13',generatedAt:new Date().toISOString(),profiles:sports.flatMap(s=>markets.map(m=>this.getCalibrationProfile(s,m))),
       note:'Profiles use the earliest graded pregame snapshot per event/market/side/line. Calibration corrections require at least 30 decisive outcomes and are bounded.'};
@@ -189,7 +298,7 @@ export class GameMarketPredictionRepository {
       totalSnapshots:rows.length,pending:rows.filter(r=>r.gradingStatus==='PENDING').length,gradedSnapshots:graded.length,independentDecisiveObservations:obs.length,
       logLoss:ll,brierScore:brier,expectedCalibrationError:ece(obs),meanPredictedProbability:predicted,actualHitRate:actual,
       calibrationGap:predicted!==null&&actual!==null?predicted-actual:null,qualifiedDecisiveBets:bets.length,flatStakeRoi:roi,path:repoPath(),
-      calibrationDashboard:this.getCalibrationDashboard(),note:'Evidence uses the earliest graded snapshot per event/market/side/line. Repeated refreshes do not inflate model sample size.'};
+      calibrationDashboard:this.getCalibrationDashboard(),contextLearning:this.getContextLearningStatus(),note:'Evidence uses the earliest graded snapshot per event/market/side/line. Repeated refreshes do not inflate model sample size.'};
   }
 }
 export const gameMarketPredictionRepository=new GameMarketPredictionRepository();

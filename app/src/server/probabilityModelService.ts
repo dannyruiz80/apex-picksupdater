@@ -70,6 +70,7 @@ export class ProbabilityModelService {
     bySport: {
       MLB: { calculations: 0, successful: 0, unavailable: 0 },
       NFL: { calculations: 0, successful: 0, unavailable: 0 },
+      NCAAF: { calculations: 0, successful: 0, unavailable: 0 },
       NBA: { calculations: 0, successful: 0, unavailable: 0 },
       WNBA: { calculations: 0, successful: 0, unavailable: 0 },
       NHL: { calculations: 0, successful: 0, unavailable: 0 },

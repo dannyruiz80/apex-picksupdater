@@ -1,4 +1,5 @@
 import { ApexSport, NormalizedApexGame, MarketMatchingStats } from '../types';
+import { footballProviderEventDateMatches, requiresStrictFootballDateIdentity } from './scheduleDateIdentity.js';
 
 export interface ProviderRawEvent {
   id: string;
@@ -28,6 +29,7 @@ class MarketMatcherService {
     bySport: {
       MLB: { retrieved: 0, matched: 0, rejected: 0, ambiguous: 0 },
       NFL: { retrieved: 0, matched: 0, rejected: 0, ambiguous: 0 },
+      NCAAF: { retrieved: 0, matched: 0, rejected: 0, ambiguous: 0 },
       NBA: { retrieved: 0, matched: 0, rejected: 0, ambiguous: 0 },
       WNBA: { retrieved: 0, matched: 0, rejected: 0, ambiguous: 0 },
       NHL: { retrieved: 0, matched: 0, rejected: 0, ambiguous: 0 },
@@ -136,8 +138,18 @@ class MarketMatcherService {
       const pTime = new Date(pEvent.commence_time).getTime();
       const hoursDiff = isNaN(apexTime) ? 0 : Math.abs(apexTime - pTime) / (1000 * 60 * 60);
 
-      // Must be scheduled within 36 hours of each other
-      if (!isNaN(apexTime) && hoursDiff > 36) {
+      // Football provider linkage is exact-date first. This prevents an NFL weekly
+      // scoreboard query or a stale sportsbook event from linking a different game
+      // week into the selected slate even when team names are identical.
+      if (requiresStrictFootballDateIdentity(sport) && !footballProviderEventDateMatches(
+        sport, apexGame.startTime, pEvent.commence_time, apexGame.scheduleDate,
+      )) {
+        continue;
+      }
+
+      // Non-football sports keep the existing time-window guard. Football has already
+      // passed the stronger calendar-date identity check above.
+      if (!requiresStrictFootballDateIdentity(sport) && !isNaN(apexTime) && hoursDiff > 36) {
         continue;
       }
 

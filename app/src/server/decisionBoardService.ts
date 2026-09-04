@@ -18,6 +18,8 @@ import { gameMarketPredictionRepository } from './gameMarketPredictionRepository
 import { formatPropSelectionLabel, humanizePropMarket } from '../propPresentation.js';
 import { tennisMatchWinnerModelService } from './tennisMatchWinnerModelService.js';
 import { wnbaBacktestMonteCarloService } from './wnbaBacktestMonteCarloService.js';
+import { isCanonicalFootballScheduleDate, scheduleDateForStartTime } from './scheduleDateIdentity.js';
+import { bankrollService } from './bankrollService.js';
 
 const RELIABILITY_ORDER: Record<SampleReliabilityTier, number> = {
   VERY_LIMITED: 0,
@@ -34,6 +36,25 @@ function eventTitle(game: NormalizedApexGame): string {
 function quoteAgeSeconds(timestamp: string): number | null {
   const parsed = Date.parse(timestamp);
   return Number.isFinite(parsed) ? Math.max(0, Math.round((Date.now() - parsed) / 1000)) : null;
+}
+
+
+function suggestedStraightUnits(pick: Pick<DecisionBoardPick, 'expectedValuePercent' | 'edgePercentagePoints' | 'reliabilityTier' | 'apexProbability'>): number {
+  const reliability = pick.reliabilityTier;
+  if (reliability === 'VERY_LIMITED' || reliability === 'LIMITED') return 0.25;
+  if (pick.expectedValuePercent >= 12 && pick.edgePercentagePoints >= 5 && pick.apexProbability >= 0.58 && reliability === 'STRONG') return 1.0;
+  if (pick.expectedValuePercent >= 7 && pick.edgePercentagePoints >= 4) return 0.75;
+  return 0.5;
+}
+
+function withStakePreview<T extends DecisionBoardPick>(pick: T): T {
+  const suggestedStakeUnits = suggestedStraightUnits(pick);
+  return {
+    ...pick,
+    suggestedStakeUnits,
+    bankrollStake: bankrollService.previewStake(suggestedStakeUnits, 'STRAIGHT'),
+    stakeSizingMethod: 'APEX_RISK_TIER_V1',
+  };
 }
 
 function buildRationale(params: {
@@ -70,7 +91,7 @@ function quoteToPick(game: NormalizedApexGame, quote: NormalizedPlayerPropQuote)
     if (v3ShadowProbability !== null) v3Support = v3ShadowProbability >= 0.5;
   }
   const displayPick = formatPropSelectionLabel(quote.playerDisplayName, quote.providerMarketKey || quote.marketCategory, rec.side, quote.line);
-  return {
+  return withStakePreview({
     rank: 0, eventId: game.eventId, eventTitle: eventTitle(game), sport: game.sport,
     league: game.league || game.competition || game.tournamentName || game.sport, startTime: game.startTime,
     pickType: 'PLAYER_PROP', displayPick, selectionLabel: displayPick, gameMarketType: null,
@@ -96,7 +117,7 @@ function quoteToPick(game: NormalizedApexGame, quote: NormalizedPlayerPropQuote)
       }))
       .filter((b): b is { sportsbook: string; oddsAmerican: number; quoteTimestamp: string } => typeof b.oddsAmerican === 'number' && Number.isFinite(b.oddsAmerican)),
     source: 'LIVE_EVALUATION',
-  };
+  });
 }
 
 export function gameCandidateToPick(game: NormalizedApexGame, model: GameMarketProjectionV1, c: GameMarketCandidateV1): DecisionBoardPick {
@@ -128,7 +149,7 @@ export function gameCandidateToPick(game: NormalizedApexGame, model: GameMarketP
     `Integrity state: ${c.integrityStatus}${c.integrityReasonCodes.length ? ` (${c.integrityReasonCodes.join(', ')})` : ''}.`,
   ];
 
-  return {
+  return withStakePreview({
     rank: 0, eventId: game.eventId, eventTitle: eventTitle(game), sport: game.sport,
     league: game.league || game.competition || game.sport, startTime: game.startTime,
     pickType: 'GAME_MARKET', displayPick: c.selectionLabel, selectionLabel: c.selectionLabel, gameMarketType: c.marketType,
@@ -164,7 +185,7 @@ export function gameCandidateToPick(game: NormalizedApexGame, model: GameMarketP
     gameCalibrationEvidenceTier: c.calibrationEvidenceTier,
     gameCalibrationEce: c.calibrationExpectedError,
     gameCalibrationBrier: c.calibrationBrierScore,
-  };
+  });
 }
 
 function snapshotToPick(snapshot: DurableHistoricalPropSnapshot): DecisionBoardPick | null {
@@ -179,7 +200,7 @@ function snapshotToPick(snapshot: DurableHistoricalPropSnapshot): DecisionBoardP
   const shadowSideProbability = snapshot.side === 'OVER' ? shadow?.shadowOverProbability ?? null : shadow?.shadowUnderProbability ?? null;
   const v3Support = shadowSideProbability === null ? null : shadowSideProbability >= 0.5;
   const displayPick = formatPropSelectionLabel(snapshot.playerName, snapshot.market, snapshot.side, snapshot.line);
-  return {
+  return withStakePreview({
     rank: 0, eventId: snapshot.eventId, eventTitle: `${snapshot.team || 'Team'} vs ${snapshot.opponent || 'Opponent'}`,
     sport: snapshot.sport, league: snapshot.league, startTime: snapshot.eventStartTime, pickType: 'PLAYER_PROP', displayPick,
     selectionLabel: displayPick, gameMarketType: null, playerName: snapshot.playerName, playerId: snapshot.playerId,
@@ -193,7 +214,7 @@ function snapshotToPick(snapshot: DurableHistoricalPropSnapshot): DecisionBoardP
     rationale: buildRationale({ probability: snapshot.apexProbability, breakEven: snapshot.breakEvenProbability,
       edge: snapshot.modelEdge, ev: snapshot.expectedValue, reliability: snapshot.reliabilityTier, isBestPrice: false, v3Support }),
     source: 'SAVED_SNAPSHOT',
-  };
+  });
 }
 
 export function rankDecisionBoardPicks(picks: DecisionBoardPick[], limit = 10): DecisionBoardPick[] {
@@ -258,9 +279,9 @@ const INFORMATIONAL_COVERAGE_REASONS = new Set([
 
 export function isDisplayedCoverageBlocker(sport: ApexSport, reason: string): boolean {
   // Early-evidence shrinkage and no-material-shadow notes are risk-control diagnostics,
-  // not the reason a candidate failed the production gate. Soccer and WNBA both use
+  // not the reason a candidate failed the production gate. Soccer, WNBA, NFL and NCAAF use
   // these notes while their game models accumulate evidence.
-  if ((sport === 'SOCCER' || sport === 'WNBA') && INFORMATIONAL_COVERAGE_REASONS.has(reason)) return false;
+  if ((sport === 'SOCCER' || sport === 'WNBA' || sport === 'NFL' || sport === 'NCAAF') && INFORMATIONAL_COVERAGE_REASONS.has(reason)) return false;
   return true;
 }
 
@@ -286,12 +307,16 @@ export function selectDecisionBoardSlateRows(
   sportFilter: ApexSportFilter,
   maxGamesRaw: number,
   nowMs = Date.now(),
+  scheduleDate?: string,
 ): NormalizedApexGame[] {
-  const maxGames = Math.max(1, Math.min(48, Math.floor(maxGamesRaw || (sportFilter === 'ALL' ? 48 : sportFilter === 'TENNIS' ? 30 : 12))));
-  const sportOrder: ApexSport[] = ['MLB', 'NFL', 'NBA', 'WNBA', 'NHL', 'SOCCER', 'TENNIS'];
+  const defaultLimit = sportFilter === 'ALL' ? 48 : sportFilter === 'TENNIS' ? 30 : sportFilter === 'NFL' ? 20 : sportFilter === 'NCAAF' ? 24 : 20;
+  const maxGames = Math.max(1, Math.min(48, Math.floor(maxGamesRaw || defaultLimit)));
+  const sportOrder: ApexSport[] = ['MLB', 'NFL', 'NCAAF', 'NBA', 'WNBA', 'NHL', 'SOCCER', 'TENNIS'];
   const candidates = games.filter((g) => g.status === 'UPCOMING' && g.pregameBetEligible !== false && g.startTime && Date.parse(g.startTime) > nowMs &&
-    (sportFilter === 'ALL' || g.sport === sportFilter) && isTennisDecisionBoardEligible(g))
+    (sportFilter === 'ALL' || g.sport === sportFilter) && isTennisDecisionBoardEligible(g) &&
+    (!scheduleDate || isCanonicalFootballScheduleDate(g.sport, g.startTime, scheduleDate)))
     .sort((a,b) => Date.parse(a.startTime) - Date.parse(b.startTime));
+  if (sportFilter === 'NFL') return candidates.slice(0, 20);
   if (sportFilter !== 'ALL') return candidates.slice(0, maxGames);
 
   const bySport = new Map<ApexSport, NormalizedApexGame[]>();
@@ -368,7 +393,7 @@ export class DecisionBoardService {
     if (sportFilter !== 'ALL') {
       return rankDecisionBoardPicks(read('ALL').filter((pick) => pick.sport === sportFilter), 500);
     }
-    const sports: ApexSport[] = ['MLB', 'NFL', 'NBA', 'WNBA', 'NHL', 'SOCCER', 'TENNIS'];
+    const sports: ApexSport[] = ['MLB', 'NFL', 'NCAAF', 'NBA', 'WNBA', 'NHL', 'SOCCER', 'TENNIS'];
     return rankDecisionBoardPicks(sports.flatMap((sport) => read(sport)), 500);
   }
 
@@ -513,10 +538,12 @@ export class DecisionBoardService {
   }
 
   async scanGames(games: NormalizedApexGame[], sportFilter: ApexSportFilter, scheduleDate: string, requestedMaxGames: number): Promise<DecisionBoardResponse> {
-    const maxGames = Math.max(1, Math.min(48, Math.floor(requestedMaxGames || (sportFilter === 'ALL' ? 48 : sportFilter === 'TENNIS' ? 30 : 12))));
-    const sportOrder: ApexSport[] = ['MLB', 'NFL', 'NBA', 'WNBA', 'NHL', 'SOCCER', 'TENNIS'];
+    const defaultLimit = sportFilter === 'ALL' ? 48 : sportFilter === 'TENNIS' ? 30 : sportFilter === 'NFL' ? 20 : sportFilter === 'NCAAF' ? 24 : 20;
+    const maxGames = Math.max(1, Math.min(48, Math.floor(requestedMaxGames || defaultLimit)));
+    const sportOrder: ApexSport[] = ['MLB', 'NFL', 'NCAAF', 'NBA', 'WNBA', 'NHL', 'SOCCER', 'TENNIS'];
     const candidates = games.filter((g) => g.status === 'UPCOMING' && g.pregameBetEligible !== false && g.startTime && Date.parse(g.startTime) > Date.now() &&
-      (sportFilter === 'ALL' || g.sport === sportFilter) && isTennisDecisionBoardEligible(g))
+      (sportFilter === 'ALL' || g.sport === sportFilter) && isTennisDecisionBoardEligible(g) &&
+      isCanonicalFootballScheduleDate(g.sport, g.startTime, scheduleDate))
       .sort((a,b) => Date.parse(a.startTime) - Date.parse(b.startTime));
 
     const coverage = new Map<ApexSport, DecisionBoardSportCoverage>();
@@ -543,7 +570,7 @@ export class DecisionBoardService {
     for (const g of candidates) ensureCoverage(g.sport).scheduleEvents++;
     if (sportFilter !== 'ALL') ensureCoverage(sportFilter);
 
-    const upcoming = selectDecisionBoardSlateRows(games, sportFilter, maxGames);
+    const upcoming = selectDecisionBoardSlateRows(games, sportFilter, maxGames, Date.now(), scheduleDate);
 
     const coverageBySport = () => sportOrder.filter((sport) => coverage.has(sport)).map((sport) => coverage.get(sport)!);
     const scanMode: DecisionBoardResponse['scanMode'] = sportFilter === 'ALL' ? 'BROAD_MULTI_SPORT' : maxGames > 3 ? 'BROAD_SINGLE_SPORT' : 'NARROW';
@@ -584,7 +611,7 @@ export class DecisionBoardService {
     if (ranked.length) status = 'SUCCESS';
     else if (status !== 'NOT_CONFIGURED' && status !== 'QUOTA_BLOCKED') status = 'NO_QUALIFIED_PICKS';
 
-    notes.push('Decision-board scans now support up to 48 events in broad ALL SPORTS mode so large slates receive meaningful model coverage instead of a tiny sample.');
+    notes.push('Decision-board scans support up to 48 events in broad ALL SPORTS mode; NFL-only scans now evaluate the full selected NFL slate (up to 20 games) instead of stopping at 12.');
     if (sportFilter === 'ALL') notes.push('ALL SPORTS mode keeps round-robin fairness across active sports while allowing enough rounds for large Tennis slates to receive meaningful coverage.');
     else notes.push(`${sportFilter} filter is active; only ${sportFilter} events are eligible for this scan.`);
     notes.push('Per-sport coverage now shows decision-board-eligible scheduled events, scanned events, model-ready events, qualified picks, production-connection state and the leading rejection reasons.');
@@ -594,6 +621,7 @@ export class DecisionBoardService {
     notes.push('APEX_GAME_MARKET_V1 remains EARLY EVIDENCE and is subject to calibration/integrity guardrails.');
     notes.push('Tennis match winner uses APEX_TENNIS_MATCH_WINNER_V1 from completed ESPN singles history; v1.14.7 adds side-identity, two-way complement, cross-book dispersion, and event-level model/market disagreement alignment audits before any recommendation can qualify.');
     notes.push('Existing player-prop production models remain ranked in the same board; future-date prop markets may not be posted yet, so a future slate can legitimately rely more heavily on game markets.');
+    notes.push('NCAAF v1.14.9 is game-market production only (moneyline/spread/total); college player props remain fail-closed until roster/stat provenance is independently verified.');
 
     const coverageRows = coverageBySport();
     return {
@@ -610,7 +638,13 @@ export class DecisionBoardService {
   }
 
   getSavedBoard(sportFilter:ApexSportFilter,scheduleDate:string):DecisionBoardResponse{
-    const picks=snapshotPersistenceService.getRealPregameSnapshots().filter((s)=>(sportFilter==='ALL'||s.sport===sportFilter)&&normalizeDate(s.eventStartTime)===scheduleDate).map(snapshotToPick).filter((p):p is DecisionBoardPick=>p!==null);
+    const picks=snapshotPersistenceService.getRealPregameSnapshots().filter((s)=>{
+      if (!(sportFilter==='ALL'||s.sport===sportFilter)) return false;
+      const eventDate = (s.sport === 'NFL' || s.sport === 'NCAAF')
+        ? scheduleDateForStartTime(s.eventStartTime)
+        : normalizeDate(s.eventStartTime);
+      return eventDate === scheduleDate;
+    }).map(snapshotToPick).filter((p):p is DecisionBoardPick=>p!==null);
     const ranked=rankDecisionBoardPicks(picks,10);
     return {status:ranked.length?'SUCCESS':'NO_QUALIFIED_PICKS',message:ranked.length?`${ranked.length} fresh saved qualified recommendation${ranked.length===1?'':'s'} available.`:'No fresh saved qualified recommendations are available for this slate yet.',generatedAt:new Date().toISOString(),sportFilter,scheduleDate,requestedMaxGames:0,gamesScanned:0,gamesWithModelData:0,qualifiedCount:ranked.length,picks:ranked,notes:['Saved-board lookup consumes zero provider credits.','Saved prop prices older than 10 minutes are excluded until the event is analyzed again. Game-model evaluations are intentionally refreshed against current executable prices.']};
   }

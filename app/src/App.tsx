@@ -211,6 +211,9 @@ export default function App() {
         onRefresh={fetchHealthAndVersion}
         isMobileDrawerOpen={isMobileDrawerOpen}
         setIsMobileDrawerOpen={setIsMobileDrawerOpen}
+        activeSport={selectedSport}
+        slateDate={selectedDate}
+        lastChecked={lastChecked}
       />
 
       {/* Main App Body */}

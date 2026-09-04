@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useState } from 'react';
 import { DecisionBoardResponse } from '../types';
 import {
   Target,
@@ -11,6 +11,8 @@ import {
   ChevronRight,
   AlertTriangle,
   CheckCircle2,
+  ChevronDown,
+  WalletCards,
 } from 'lucide-react';
 
 interface DecisionBoardPanelProps {
@@ -46,6 +48,7 @@ export const DecisionBoardPanel: React.FC<DecisionBoardPanelProps> = ({
   const topPicks = picks.slice(0, compact ? 3 : 5);
   const hasScanned = Boolean(board && board.requestedMaxGames > 0);
   const passState = hasScanned && board?.status === 'NO_QUALIFIED_PICKS';
+  const [showCoverage, setShowCoverage] = useState(false);
 
   return (
     <section className="rounded-2xl border border-emerald-500/30 bg-gradient-to-b from-emerald-950/20 to-[#0b111d] overflow-hidden shadow-lg">
@@ -151,7 +154,7 @@ export const DecisionBoardPanel: React.FC<DecisionBoardPanelProps> = ({
                     </div>
                   </div>
 
-                  <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 mt-4">
+                  <div className="grid grid-cols-2 sm:grid-cols-5 gap-2 mt-4">
                     <div className="rounded-lg border border-slate-800 bg-black/20 p-2.5">
                       <div className="flex items-center gap-1 text-[10px] text-slate-500"><TrendingUp className="h-3 w-3" /> EDGE</div>
                       <div className="text-sm font-bold text-emerald-300 mt-0.5">+{pick.edgePercentagePoints.toFixed(1)} pp</div>
@@ -168,6 +171,11 @@ export const DecisionBoardPanel: React.FC<DecisionBoardPanelProps> = ({
                     <div className="rounded-lg border border-slate-800 bg-black/20 p-2.5">
                       <div className="flex items-center gap-1 text-[10px] text-slate-500"><ShieldCheck className="h-3 w-3" /> DATA</div>
                       <div className="text-sm font-bold text-white mt-0.5">{pick.reliabilityTier}</div>
+                    </div>
+                    <div className="rounded-lg border border-slate-800 bg-black/20 p-2.5">
+                      <div className="flex items-center gap-1 text-[10px] text-slate-500"><WalletCards className="h-3 w-3" /> STAKE</div>
+                      <div className="text-sm font-bold text-cyan-300 mt-0.5">{(pick.bankrollStake?.configured ? pick.bankrollStake.adjustedUnits : pick.suggestedStakeUnits ?? 0.5).toFixed(2)}u</div>
+                      <div className="text-[9px] text-slate-500">{pick.bankrollStake?.configured && pick.bankrollStake.suggestedStakeDollars !== null ? `$${pick.bankrollStake.suggestedStakeDollars.toFixed(2)}` : 'set bankroll for $'}</div>
                     </div>
                   </div>
 
@@ -204,38 +212,14 @@ export const DecisionBoardPanel: React.FC<DecisionBoardPanelProps> = ({
         )}
 
         {board && board.requestedMaxGames > 0 && board.coverageBySport && board.coverageBySport.length > 0 && (
-          <div className="rounded-xl border border-slate-800 bg-[#0a0f19] p-3">
-            <div className="text-[10px] font-black uppercase tracking-[0.14em] text-slate-400">Sport coverage funnel</div>
-            <div className="mt-2 flex flex-wrap gap-2">
-              {board.coverageBySport.map((row) => {
-                const topRejects = (Object.entries(row.rejectionReasons || {}) as Array<[string, number]>)
-                  .sort((a,b) => b[1] - a[1])
-                  .slice(0, 3);
-                return (
-                  <div
-                    key={row.sport}
-                    title={row.lastMessage || undefined}
-                    className={`rounded-lg border px-2.5 py-2 text-[10px] font-mono ${row.qualifiedPicks > 0 ? 'border-emerald-500/35 bg-emerald-950/20 text-emerald-200' : row.eventsWithModelData > 0 ? 'border-amber-500/25 bg-amber-950/10 text-amber-200' : 'border-slate-800 bg-slate-900/60 text-slate-400'}`}
-                  >
-                    <div className="flex items-center gap-2">
-                      <span className="font-black">{row.sport}</span>
-                      <span className={`rounded px-1.5 py-0.5 text-[8px] font-black ${row.productionConnection === 'CONNECTED' ? 'bg-emerald-500/10 text-emerald-300' : row.productionConnection === 'PARTIAL' ? 'bg-amber-500/10 text-amber-300' : 'bg-slate-800 text-slate-500'}`}>
-                        {row.productionConnection}
-                      </span>
-                    </div>
-                    <div>{row.scannedEvents}/{row.scheduleEvents} scanned · {row.eventsWithModelData} model-ready · {row.qualifiedPicks} picks</div>
-                    {row.qualifiedPicks === 0 && topRejects.length > 0 && (
-                      <div className="mt-1 max-w-[360px] text-[9px] text-slate-400">
-                        Blocked: {topRejects.map(([reason,count]) => `${reason} ×${count}`).join(' · ')}
-                      </div>
-                    )}
-                  </div>
-                );
-              })}
-            </div>
-            <div className="mt-2 text-[10px] text-slate-500">
-              {board.sportFilter === 'ALL' ? 'ALL SPORTS is using round-robin coverage.' : `${board.sportFilter} filter is active; switch to All Sports to compare leagues.`}
-            </div>
+          <div className="rounded-xl border border-slate-800 bg-[#0a0f19]">
+            <button type="button" onClick={() => setShowCoverage(v => !v)} className="flex w-full items-center justify-between gap-3 px-3 py-3 text-left">
+              <div><div className="text-[10px] font-black uppercase tracking-[0.14em] text-slate-300">Coverage & Integrity</div><div className="mt-0.5 text-[10px] text-slate-500">{board.gamesScanned} scanned · {board.gamesWithModelData} model-ready · {board.qualifiedCount} qualified</div></div>
+              <ChevronDown className={`h-4 w-4 text-slate-500 transition-transform ${showCoverage ? 'rotate-180' : ''}`} />
+            </button>
+            {showCoverage && <div className="border-t border-slate-800 p-3"><div className="flex flex-wrap gap-2">
+              {board.coverageBySport.map((row) => { const topRejects=(Object.entries(row.rejectionReasons||{}) as Array<[string,number]>).sort((a,b)=>b[1]-a[1]).slice(0,3); return <div key={row.sport} title={row.lastMessage||undefined} className={`rounded-lg border px-2.5 py-2 text-[10px] font-mono ${row.qualifiedPicks>0?'border-emerald-500/35 bg-emerald-950/20 text-emerald-200':row.eventsWithModelData>0?'border-amber-500/25 bg-amber-950/10 text-amber-200':'border-slate-800 bg-slate-900/60 text-slate-400'}`}><div className="flex items-center gap-2"><span className="font-black">{row.sport}</span><span className={`rounded px-1.5 py-0.5 text-[8px] font-black ${row.productionConnection==='CONNECTED'?'bg-emerald-500/10 text-emerald-300':row.productionConnection==='PARTIAL'?'bg-amber-500/10 text-amber-300':'bg-slate-800 text-slate-500'}`}>{row.productionConnection}</span></div><div>{row.scannedEvents}/{row.scheduleEvents} scanned · {row.eventsWithModelData} model-ready · {row.qualifiedPicks} picks</div>{row.qualifiedPicks===0&&topRejects.length>0&&<div className="mt-1 max-w-[360px] text-[9px] text-slate-400">Blocked: {topRejects.map(([reason,count])=>`${reason} ×${count}`).join(' · ')}</div>}</div>; })}
+            </div><div className="mt-2 text-[10px] text-slate-500">{board.sportFilter==='ALL'?'ALL SPORTS is using round-robin coverage.':`${board.sportFilter} filter is active; switch to All Sports to compare leagues.`}</div></div>}
           </div>
         )}
 

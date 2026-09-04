@@ -94,6 +94,7 @@ function espnPath(game: NormalizedApexGame): string | null {
   switch (game.sport) {
     case 'MLB': return 'baseball/mlb';
     case 'NFL': return 'football/nfl';
+    case 'NCAAF': return 'football/college-football';
     case 'NBA': return 'basketball/nba';
     case 'WNBA': return 'basketball/wnba';
     case 'NHL': return 'hockey/nhl';
@@ -110,6 +111,9 @@ function espnSeasonForDate(sport: ApexSport, iso: string): number {
   const year = d.getUTCFullYear();
   const month = d.getUTCMonth() + 1;
   if ((sport === 'NBA' || sport === 'NHL') && month >= 9) return year + 1;
+  // ESPN labels NFL/NCAAF seasons by the year in which the regular season began.
+  // January/February playoff or bowl games therefore belong to the prior season year.
+  if ((sport === 'NFL' || sport === 'NCAAF') && month <= 2) return year - 1;
   return year;
 }
 
