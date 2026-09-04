@@ -1,7 +1,7 @@
 {
   "name": "react-example",
   "private": true,
-  "version": "1.14.5",
+  "version": "1.14.6",
   "type": "module",
   "scripts": {
     "dev": "tsx server.ts",
@@ -20,7 +20,8 @@
     "verify:game-calibration": "tsx src/server/gameMarketCalibration.verify.ts",
     "verify:bankroll": "tsx src/server/bankroll.verify.ts",
     "verify:cross-sport-tennis": "tsx src/server/decisionBoardCrossSportTennisVerification.ts",
-    "verify:coverage-1-14-5": "tsx src/server/decisionBoardCoverage145Verification.ts"
+    "verify:coverage-1-14-5": "tsx src/server/decisionBoardCoverage145Verification.ts",
+    "verify:tennis-1-14-6": "tsx src/server/tennisMarketModelCoverage146Verification.ts"
   },
   "dependencies": {
     "@google/genai": "^2.4.0",

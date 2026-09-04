@@ -4,6 +4,7 @@ import {
   TennisAuditDiagnostic,
   TennisTour,
   TennisTourFilter,
+  TennisMatchFormat,
   TennisSetScore,
   ApexGameStatus,
 } from '../types.js';
@@ -78,6 +79,7 @@ function getChicagoDateString(dateIsoOrTimestamp?: string): string | null {
 
 interface RawCompetitor {
   id?: string;
+  type?: string;
   order?: number;
   winner?: boolean;
   score?: string | number;
@@ -146,6 +148,18 @@ interface RawCompetition {
   tournamentId?: string | number;
 }
 
+function classifyTennisMatchFormat(comp: RawCompetition): TennisMatchFormat {
+  const slug = String(comp.type?.slug || '').toLowerCase();
+  const text = String(comp.type?.text || '').toLowerCase();
+  const combined = `${slug} ${text}`;
+  if (combined.includes('double')) return 'DOUBLES';
+  if (combined.includes('single')) return 'SINGLES';
+  const competitors = comp.competitors || [];
+  if (competitors.length >= 2 && competitors.every((c) => String(c.type || '').toLowerCase() === 'athlete')) return 'SINGLES';
+  if (competitors.some((c) => String(c.type || '').toLowerCase() === 'team' || !!c.roster?.displayName?.includes('/'))) return 'DOUBLES';
+  return 'OTHER';
+}
+
 interface RawTennisEvent {
   id: string | number;
   name: string;
@@ -174,7 +188,9 @@ function parseCompetition(
     const matchDateStr = comp.date || comp.startDate || tournament.date || new Date().toISOString();
     const matchChicagoDate = getChicagoDateString(matchDateStr) || scheduleDate;
 
-    // Classify Tour: ATP vs WTA
+    const tennisMatchFormat = classifyTennisMatchFormat(comp);
+
+    // Classify Tour: ATP vs WTA from the competition type when ESPN exposes it.
     const typeSlug = (comp.type?.slug || '').toLowerCase();
     const typeText = (comp.type?.text || '').toLowerCase();
     let tour: TennisTour = defaultTour;
@@ -313,6 +329,7 @@ function parseCompetition(
       round,
       court,
       surface,
+      tennisMatchFormat,
       scheduleDate: matchChicagoDate,
       startTime: matchDateStr,
       awayTeamId: playerAId,

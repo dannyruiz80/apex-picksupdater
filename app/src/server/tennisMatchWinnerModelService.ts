@@ -10,7 +10,9 @@ import {
 const ESPN_ATP_SCOREBOARD_URL = 'https://site.api.espn.com/apis/site/v2/sports/tennis/atp/scoreboard';
 const ESPN_WTA_SCOREBOARD_URL = 'https://site.api.espn.com/apis/site/v2/sports/tennis/wta/scoreboard';
 
-const HISTORY_DAYS = 24;
+const INITIAL_HISTORY_DAYS = 30;
+const MAX_HISTORY_DAYS = 120;
+const HISTORY_WINDOW_DAYS = 30;
 const HISTORY_CACHE_TTL_MS = 6 * 60 * 60 * 1000;
 const PROJECTION_CACHE_TTL_MS = 30 * 60 * 1000;
 const MAX_QUOTE_AGE_MS = 10 * 60 * 1000;
@@ -102,11 +104,35 @@ function normalizeName(value: string | null | undefined): string {
     .trim();
 }
 
-function namesMatch(a: string | null | undefined, b: string | null | undefined): boolean {
+function tennisNameMatchConfidence(a: string | null | undefined, b: string | null | undefined): number {
   const x = normalizeName(a);
   const y = normalizeName(b);
-  if (!x || !y) return false;
-  return x === y || x.includes(y) || y.includes(x);
+  if (!x || !y) return 0;
+  if (x === y) return 1;
+  if (x.includes(y) || y.includes(x)) {
+    const ratio = Math.min(x.length, y.length) / Math.max(x.length, y.length);
+    return Math.max(0.88, ratio);
+  }
+  const xp = x.split(' ').filter(Boolean);
+  const yp = y.split(' ').filter(Boolean);
+  if (!xp.length || !yp.length) return 0;
+  const xl = xp[xp.length - 1];
+  const yl = yp[yp.length - 1];
+  if (xl === yl && xl.length >= 3) {
+    if (xp.length === 1 || yp.length === 1) return 0.88;
+    if (xp[0][0] === yp[0][0]) return 0.95;
+    return 0.70;
+  }
+  const xs = new Set(xp.filter((t) => t.length > 1));
+  const ys = new Set(yp.filter((t) => t.length > 1));
+  if (!xs.size || !ys.size) return 0;
+  let matched = 0;
+  for (const token of xs) if (ys.has(token)) matched++;
+  return matched / Math.max(xs.size, ys.size);
+}
+
+function namesMatch(a: string | null | undefined, b: string | null | undefined): boolean {
+  return tennisNameMatchConfidence(a, b) >= 0.88;
 }
 
 function samePlayer(
@@ -190,10 +216,36 @@ function rawCompetitorName(comp: any): string {
   );
 }
 
+function historyCompetitionFormat(comp: any): 'SINGLES' | 'DOUBLES' | 'OTHER' {
+  const slug = String(comp?.type?.slug || '').toLowerCase();
+  const text = String(comp?.type?.text || '').toLowerCase();
+  const combined = `${slug} ${text}`;
+  if (combined.includes('double')) return 'DOUBLES';
+  if (combined.includes('single')) return 'SINGLES';
+  const competitors = Array.isArray(comp?.competitors) ? comp.competitors : [];
+  if (competitors.length >= 2 && competitors.every((c: any) => String(c?.type || '').toLowerCase() === 'athlete')) return 'SINGLES';
+  if (competitors.some((c: any) => String(c?.type || '').toLowerCase() === 'team' || String(c?.roster?.displayName || '').includes('/'))) return 'DOUBLES';
+  return 'OTHER';
+}
+
+function historyCompetitionTour(comp: any, fallback: TennisTour): TennisTour {
+  const combined = `${String(comp?.type?.slug || '').toLowerCase()} ${String(comp?.type?.text || '').toLowerCase()}`;
+  if (combined.includes('women')) return 'WTA';
+  if (combined.includes('men')) return 'ATP';
+  return fallback;
+}
+
+function unresolvedHistoryParticipant(name: string): boolean {
+  const n = normalizeName(name);
+  return !n || n === 'tbd' || n === 'unknown player';
+}
+
 function parseHistoryMatches(raw: any, tour: TennisTour, requestedDate: string): TennisHistoryMatch[] {
   const matches: TennisHistoryMatch[] = [];
   for (const event of Array.isArray(raw?.events) ? raw.events : []) {
     for (const comp of extractCompetitions(event)) {
+      if (historyCompetitionFormat(comp) !== 'SINGLES') continue;
+      if (historyCompetitionTour(comp, tour) !== tour) continue;
       const statusName = String(comp?.status?.type?.name || '').toUpperCase();
       const state = String(comp?.status?.type?.state || '').toLowerCase();
       const completed = comp?.status?.type?.completed === true || state === 'post';
@@ -204,6 +256,9 @@ function parseHistoryMatches(raw: any, tour: TennisTour, requestedDate: string):
       if (competitors.length < 2) continue;
       const a = competitors[0];
       const b = competitors[1];
+      const aName = rawCompetitorName(a);
+      const bName = rawCompetitorName(b);
+      if (unresolvedHistoryParticipant(aName) || unresolvedHistoryParticipant(bName) || aName.includes('/') || bName.includes('/')) continue;
       let winner: 'A' | 'B' | null = null;
       if (a?.winner === true) winner = 'A';
       else if (b?.winner === true) winner = 'B';
@@ -219,9 +274,9 @@ function parseHistoryMatches(raw: any, tour: TennisTour, requestedDate: string):
         tour,
         surface,
         playerAId: a?.athlete?.id ? String(a.athlete.id) : a?.id ? String(a.id) : null,
-        playerAName: rawCompetitorName(a),
+        playerAName: aName,
         playerBId: b?.athlete?.id ? String(b.athlete.id) : b?.id ? String(b.id) : null,
-        playerBName: rawCompetitorName(b),
+        playerBName: bName,
         winner,
       });
     }
@@ -240,7 +295,7 @@ async function fetchHistoryDay(date: string, tour: TennisTour): Promise<TennisHi
   try {
     const res = await fetch(`${base}?dates=${ymd(date)}`, {
       signal: controller.signal,
-      headers: { 'User-Agent': 'ApexPicks/1.14.4 TennisMatchWinner', Accept: 'application/json' },
+      headers: { 'User-Agent': 'ApexPicks/1.14.6 TennisMatchWinner', Accept: 'application/json' },
     });
     if (!res.ok) throw new Error(`ESPN tennis history HTTP ${res.status}`);
     const raw = await res.json();
@@ -252,17 +307,36 @@ async function fetchHistoryDay(date: string, tour: TennisTour): Promise<TennisHi
   }
 }
 
-async function loadHistory(asOfDate: string, tour: TennisTour): Promise<TennisHistoryMatch[]> {
-  const dates = Array.from({ length: HISTORY_DAYS }, (_, i) => dateAddDays(asOfDate, -(i + 1)));
+async function loadHistoryWindow(asOfDate: string, tour: TennisTour, startDay: number, dayCount: number): Promise<TennisHistoryMatch[]> {
+  const dates = Array.from({ length: dayCount }, (_, i) => dateAddDays(asOfDate, -(startDay + i + 1)));
   const all: TennisHistoryMatch[] = [];
 
-  // Small batches avoid turning one model build into a burst of two dozen simultaneous ESPN calls.
+  // Six requests at a time keeps ESPN load controlled. Per-day results are cached for six hours.
   for (let i = 0; i < dates.length; i += 6) {
     const batch = dates.slice(i, i + 6);
     const settled = await Promise.allSettled(batch.map((d) => fetchHistoryDay(d, tour)));
     for (const result of settled) {
       if (result.status === 'fulfilled') all.push(...result.value);
     }
+  }
+  return all;
+}
+
+async function loadAdaptiveHistory(game: NormalizedApexGame): Promise<TennisHistoryMatch[]> {
+  const asOfDate = (game.scheduleDate || game.startTime.slice(0, 10)).slice(0, 10);
+  const all: TennisHistoryMatch[] = [];
+
+  for (let startDay = 0; startDay < MAX_HISTORY_DAYS; startDay += HISTORY_WINDOW_DAYS) {
+    const dayCount = startDay === 0 ? INITIAL_HISTORY_DAYS : Math.min(HISTORY_WINDOW_DAYS, MAX_HISTORY_DAYS - startDay);
+    const window = await loadHistoryWindow(asOfDate, game.tour!, startDay, dayCount);
+    all.push(...window);
+
+    const unique = new Map<string, TennisHistoryMatch>();
+    for (const match of all) unique.set(match.eventId, match);
+    const rows = [...unique.values()].sort((a, b) => Date.parse(b.startTime) - Date.parse(a.startTime));
+    const a = summarizePlayer(rows, game.playerAId, game.playerAName, game.startTime, game.surface || null);
+    const b = summarizePlayer(rows, game.playerBId, game.playerBName, game.startTime, game.surface || null);
+    if (a.sampleCount >= 6 && b.sampleCount >= 6) return rows;
   }
 
   const unique = new Map<string, TennisHistoryMatch>();
@@ -405,20 +479,24 @@ export function buildTennisProjectionFromHistory(
     playerBHistory: b,
     targetSurface: game.surface || null,
     notes: [
-      'Raw match-winner probability uses only completed ESPN tennis match history before the scheduled start time.',
+      'Raw match-winner probability uses only completed ESPN singles history before the scheduled start time.',
+      'History lookback expands adaptively from 30 up to 120 days only when needed to preserve the minimum six completed singles matches per player.',
       'Recent results are recency weighted and small samples are symmetrically shrunk toward 50%.',
       'Verified same-surface history contributes only when at least four prior matches exist for that player.',
       'Sportsbook prices are excluded from the raw tennis probability and enter only after forecasting for edge/EV evaluation.',
-      'Tennis spreads, totals and player props remain fail-closed in v1.14.4.',
+      'Tennis spreads, totals, doubles and player props remain fail-closed in v1.14.6.',
     ],
   };
 }
 
 function participantSide(game: NormalizedApexGame, name: string): 'AWAY' | 'HOME' | null {
   // Tennis adapter identity: player A is carried in awayTeam; player B in homeTeam.
-  if (namesMatch(name, game.playerAName) || namesMatch(name, game.awayTeam)) return 'AWAY';
-  if (namesMatch(name, game.playerBName) || namesMatch(name, game.homeTeam)) return 'HOME';
-  return null;
+  // Use a confidence margin so abbreviated book names can resolve without allowing ambiguous surnames to cross-map.
+  const aScore = Math.max(tennisNameMatchConfidence(name, game.playerAName), tennisNameMatchConfidence(name, game.awayTeam));
+  const bScore = Math.max(tennisNameMatchConfidence(name, game.playerBName), tennisNameMatchConfidence(name, game.homeTeam));
+  const best = Math.max(aScore, bScore);
+  if (best < 0.88 || Math.abs(aScore - bScore) < 0.06) return null;
+  return aScore > bScore ? 'AWAY' : 'HOME';
 }
 
 interface TennisPricedOutcome {
@@ -582,7 +660,7 @@ export function evaluateTennisMoneylineMarkets(
         `${projection.reliabilityTier} historical reliability: ${projection.playerAHistory.sampleCount} ${game.playerAName} matches / ${projection.playerBHistory.sampleCount} ${game.playerBName} matches.`,
         `Early-evidence risk shrinkage uses ${(weight * 100).toFixed(0)}% model weight; sportsbook consensus is a decision guardrail only and never an input to the raw probability.`,
         projection.targetSurface ? `Verified target surface: ${projection.targetSurface}.` : 'Surface was not verified for this match, so no surface adjustment was used.',
-        'Tennis spreads, totals and player props remain fail-closed in v1.14.4.',
+        'Tennis spreads, totals, doubles and player props remain fail-closed in v1.14.6.',
       ],
       source: 'GAME_MODEL_EVALUATION',
       rawModelProbability: rawProbability,
@@ -614,16 +692,24 @@ export class TennisMatchWinnerModelService {
     const cached = projectionCache.get(cacheKey);
     if (cached && Date.now() - cached.generatedAtMs < PROJECTION_CACHE_TTL_MS) return cached.projection;
 
+    if (game.sport === 'TENNIS' && (game.tennisMatchFormat === 'DOUBLES' || game.tennisMatchFormat === 'OTHER' || String(game.playerAName || '').includes('/') || String(game.playerBName || '').includes('/'))) {
+      const projection = buildTennisProjectionFromHistory(game, []);
+      projection.status = 'UNSUPPORTED';
+      projection.reason = 'TENNIS_MATCH_WINNER_SINGLES_ONLY';
+      projection.notes.push('Doubles and unresolved competition formats remain fail-closed for the production match-winner model.');
+      projectionCache.set(cacheKey, { generatedAtMs: Date.now(), projection });
+      return projection;
+    }
+
     if (game.sport !== 'TENNIS' || !game.tour) {
       const projection = buildTennisProjectionFromHistory(game, []);
       projectionCache.set(cacheKey, { generatedAtMs: Date.now(), projection });
       return projection;
     }
 
-    const asOfDate = (game.scheduleDate || game.startTime.slice(0, 10)).slice(0, 10);
     let matches: TennisHistoryMatch[] = [];
     try {
-      matches = await loadHistory(asOfDate, game.tour);
+      matches = await loadAdaptiveHistory(game);
     } catch (err: any) {
       const projection = buildTennisProjectionFromHistory(game, []);
       projection.status = 'INSUFFICIENT_DATA';
