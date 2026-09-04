@@ -41,7 +41,7 @@ function bestCandidateOfType(picks: DecisionBoardPick[], type: MarketType): Deci
 
 function eligibleGames(games: NormalizedApexGame[], sport: ApexSportFilter, limit: number): NormalizedApexGame[] {
   const rows = games
-    .filter((g) => g.sport !== 'TENNIS' && g.status === 'UPCOMING' && g.startTime && Date.parse(g.startTime) > Date.now())
+    .filter((g) => g.sport !== 'TENNIS' && g.status === 'UPCOMING' && g.pregameBetEligible !== false && g.startTime && Date.parse(g.startTime) > Date.now())
     .filter((g) => sport === 'ALL' || g.sport === sport)
     .sort((a, b) => Date.parse(a.startTime) - Date.parse(b.startTime));
   if (sport !== 'ALL') return rows.slice(0, limit);

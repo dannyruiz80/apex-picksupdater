@@ -209,6 +209,65 @@ function expectedScores(home: TeamHistorySummary, away: TeamHistorySummary): { h
   };
 }
 
+export function buildWnbaExpectedScores(home: TeamHistorySummary, away: TeamHistorySummary): { home: number; away: number; recentBlendWeight: number } | null {
+  const base = expectedScores(home, away);
+  if (!base) return null;
+  if (home.records.length < 5 || away.records.length < 5) return { ...base, recentBlendWeight: 0 };
+  const avg = (xs: number[]) => xs.reduce((a,b)=>a+b,0) / xs.length;
+  const h5 = home.records.slice(0,5), a5 = away.records.slice(0,5);
+  const recentHome = (avg(h5.map(r=>r.pointsFor)) + avg(a5.map(r=>r.pointsAgainst))) / 2;
+  const recentAway = (avg(a5.map(r=>r.pointsFor)) + avg(h5.map(r=>r.pointsAgainst))) / 2;
+  // Prospective, bounded WNBA recency blend. The base model already contains a decayed season sample
+  // and venue splits; this only lets the five most recent completed games contribute modestly.
+  const recentBlendWeight = Math.min(home.sampleCount, away.sampleCount) >= 12 ? 0.20 : 0.12;
+  const boundedRecentHome = base.home + clampValue(recentHome - base.home, -10, 10);
+  const boundedRecentAway = base.away + clampValue(recentAway - base.away, -10, 10);
+  return {
+    home: Math.max(0.01, base.home * (1 - recentBlendWeight) + boundedRecentHome * recentBlendWeight),
+    away: Math.max(0.01, base.away * (1 - recentBlendWeight) + boundedRecentAway * recentBlendWeight),
+    recentBlendWeight,
+  };
+}
+
+
+export interface WnbaHistoricalProjectionCore {
+  reliabilityTier: SampleReliabilityTier;
+  expectedHomeScore: number;
+  expectedAwayScore: number;
+  expectedMargin: number;
+  expectedTotal: number;
+  marginStdDev: number;
+  totalStdDev: number;
+  homeWinProbability: number;
+  awayWinProbability: number;
+  recentBlendWeight: number;
+}
+
+export function buildWnbaHistoricalProjection(home: TeamHistorySummary, away: TeamHistorySummary): WnbaHistoricalProjectionCore | null {
+  const scores = buildWnbaExpectedScores(home, away);
+  if (!scores) return null;
+  const expectedMargin = scores.home - scores.away;
+  const expectedTotal = scores.home + scores.away;
+  const floor = sportUncertaintyFloor('WNBA');
+  const marginObserved = mean([home.marginStdDev, away.marginStdDev].filter((v): v is number => v !== null));
+  const totalObserved = mean([home.totalStdDev, away.totalStdDev].filter((v): v is number => v !== null));
+  const marginStdDev = Math.max(floor.margin, marginObserved ?? floor.margin);
+  const totalStdDev = Math.max(floor.total, totalObserved ?? floor.total);
+  const homeWinProbability = normalCdf(expectedMargin / marginStdDev);
+  return {
+    reliabilityTier: reliability(home, away),
+    expectedHomeScore: scores.home,
+    expectedAwayScore: scores.away,
+    expectedMargin,
+    expectedTotal,
+    marginStdDev,
+    totalStdDev,
+    homeWinProbability,
+    awayWinProbability: 1 - homeWinProbability,
+    recentBlendWeight: scores.recentBlendWeight,
+  };
+}
+
 function soccerOutcomeProbabilities(lambdaHome: number, lambdaAway: number) {
   let home = 0, draw = 0, away = 0;
   const maxGoals = 12;
@@ -589,13 +648,18 @@ export class GameMarketModelService {
     const rel = reliability(homeHistory, awayHistory);
     const pointInTimeValid = homeHistory.pointInTimeValid && awayHistory.pointInTimeValid;
     const unavailable = game.sport === 'TENNIS' || homeHistory.status !== 'AVAILABLE' || awayHistory.status !== 'AVAILABLE' || !pointInTimeValid;
-    const scores = unavailable ? null : expectedScores(homeHistory, awayHistory);
+    const wnbaScores = !unavailable && game.sport === 'WNBA' ? buildWnbaExpectedScores(homeHistory, awayHistory) : null;
+    const scores = unavailable ? null : (wnbaScores ?? expectedScores(homeHistory, awayHistory));
     const notes = [
       'Probability model uses public historical team results only; sportsbook odds do not enter the forecast.',
       'Current V1 game model is prospective/early-evidence and will be calibrated from newly logged predictions.',
       ...homeHistory.warnings,
       ...awayHistory.warnings,
     ];
+    if (game.sport === 'WNBA' && wnbaScores) {
+      notes.push(`WNBA production scoring projection uses a ${(wnbaScores.recentBlendWeight * 100).toFixed(0)}% bounded recent-five blend on top of the point-in-time season/venue baseline.`);
+      notes.push('WNBA market prices do not enter expected score or raw win probability; odds remain decision/economic inputs only.');
+    }
 
     if (!scores) {
       return {
@@ -755,7 +819,7 @@ export class GameMarketModelService {
       if (guardedEdge < MIN_EDGE) baseReasons.push('EDGE_BELOW_3PP');
       if (guardedEv * 100 < MIN_EV_PERCENT) baseReasons.push('EV_BELOW_3_PERCENT');
       if (guardedEv <= 0) baseReasons.push('NON_POSITIVE_EV');
-      if (!model.pointInTimeValid || Date.parse(game.startTime) <= Date.now() || game.status !== 'UPCOMING') baseReasons.push('POINT_IN_TIME_OR_PREGAME_INVALID');
+      if (!model.pointInTimeValid || Date.parse(game.startTime) <= Date.now() || game.status !== 'UPCOMING' || game.pregameBetEligible === false) baseReasons.push('POINT_IN_TIME_OR_PREGAME_INVALID');
 
       const integrity = markIntegrity(
         baseReasons,

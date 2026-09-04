@@ -17,6 +17,7 @@ import { gameMarketModelService, GameMarketCandidateV1, GameMarketProjectionV1 }
 import { gameMarketPredictionRepository } from './gameMarketPredictionRepository.js';
 import { formatPropSelectionLabel, humanizePropMarket } from '../propPresentation.js';
 import { tennisMatchWinnerModelService } from './tennisMatchWinnerModelService.js';
+import { wnbaBacktestMonteCarloService } from './wnbaBacktestMonteCarloService.js';
 
 const RELIABILITY_ORDER: Record<SampleReliabilityTier, number> = {
   VERY_LIMITED: 0,
@@ -256,9 +257,10 @@ const INFORMATIONAL_COVERAGE_REASONS = new Set([
 ]);
 
 export function isDisplayedCoverageBlocker(sport: ApexSport, reason: string): boolean {
-  // Soccer early-evidence shrinkage is a risk-control note, not a reason the pick failed.
-  // Keep actual reliability / edge / EV / integrity failures visible.
-  if (sport === 'SOCCER' && INFORMATIONAL_COVERAGE_REASONS.has(reason)) return false;
+  // Early-evidence shrinkage and no-material-shadow notes are risk-control diagnostics,
+  // not the reason a candidate failed the production gate. Soccer and WNBA both use
+  // these notes while their game models accumulate evidence.
+  if ((sport === 'SOCCER' || sport === 'WNBA') && INFORMATIONAL_COVERAGE_REASONS.has(reason)) return false;
   return true;
 }
 
@@ -287,7 +289,7 @@ export function selectDecisionBoardSlateRows(
 ): NormalizedApexGame[] {
   const maxGames = Math.max(1, Math.min(48, Math.floor(maxGamesRaw || (sportFilter === 'ALL' ? 48 : sportFilter === 'TENNIS' ? 30 : 12))));
   const sportOrder: ApexSport[] = ['MLB', 'NFL', 'NBA', 'WNBA', 'NHL', 'SOCCER', 'TENNIS'];
-  const candidates = games.filter((g) => g.status === 'UPCOMING' && g.startTime && Date.parse(g.startTime) > nowMs &&
+  const candidates = games.filter((g) => g.status === 'UPCOMING' && g.pregameBetEligible !== false && g.startTime && Date.parse(g.startTime) > nowMs &&
     (sportFilter === 'ALL' || g.sport === sportFilter) && isTennisDecisionBoardEligible(g))
     .sort((a,b) => Date.parse(a.startTime) - Date.parse(b.startTime));
   if (sportFilter !== 'ALL') return candidates.slice(0, maxGames);
@@ -378,7 +380,7 @@ export class DecisionBoardService {
     rejectionReasons: Record<string, number>;
   }> {
     const rejectionReasons: Record<string, number> = {};
-    if (game.status !== 'UPCOMING' || !game.startTime || Date.parse(game.startTime) <= Date.now()) {
+    if (game.status !== 'UPCOMING' || game.pregameBetEligible === false || !game.startTime || Date.parse(game.startTime) <= Date.now()) {
       addReason(rejectionReasons, 'EVENT_NOT_PREGAME');
       return { status:'NO_UPCOMING_EVENTS', message:'Only verified pregame events can be analyzed for a pick.', picks:[], modelDataAvailable:false, rejectionReasons };
     }
@@ -424,11 +426,32 @@ export class DecisionBoardService {
         if (model.status === 'AVAILABLE') {
           modelDataAvailable = true;
           const sportEvidence = gameMarketPredictionRepository.getEvidenceFor(game.sport);
+          const prospectiveMoneylineEvidence = gameMarketPredictionRepository.getEvidenceFor(game.sport, 'MONEYLINE');
+          const historicalWnbaMoneylineEvidence = game.sport === 'WNBA' ? wnbaBacktestMonteCarloService.getMoneylineEvidence() : null;
+          const moneylineEvidence = historicalWnbaMoneylineEvidence
+            ? {
+                independentDecisiveObservations: historicalWnbaMoneylineEvidence.independentDecisiveObservations + prospectiveMoneylineEvidence.independentDecisiveObservations,
+                calibrationGap: prospectiveMoneylineEvidence.independentDecisiveObservations > 0
+                  ? (historicalWnbaMoneylineEvidence.calibrationGap ?? prospectiveMoneylineEvidence.calibrationGap)
+                  : historicalWnbaMoneylineEvidence.calibrationGap,
+                expectedCalibrationError: prospectiveMoneylineEvidence.independentDecisiveObservations > 0
+                  ? Math.max(historicalWnbaMoneylineEvidence.expectedCalibrationError ?? 0, prospectiveMoneylineEvidence.expectedCalibrationError ?? 0)
+                  : historicalWnbaMoneylineEvidence.expectedCalibrationError,
+                brierScore: prospectiveMoneylineEvidence.independentDecisiveObservations > 0
+                  ? Math.max(historicalWnbaMoneylineEvidence.brierScore ?? 0, prospectiveMoneylineEvidence.brierScore ?? 0)
+                  : historicalWnbaMoneylineEvidence.brierScore,
+                logLoss: prospectiveMoneylineEvidence.logLoss ?? historicalWnbaMoneylineEvidence.logLoss,
+                evidenceTier: historicalWnbaMoneylineEvidence.evidenceTier,
+                recommendedModelWeight: prospectiveMoneylineEvidence.independentDecisiveObservations > 0
+                  ? Math.min(historicalWnbaMoneylineEvidence.recommendedModelWeight, prospectiveMoneylineEvidence.recommendedModelWeight)
+                  : historicalWnbaMoneylineEvidence.recommendedModelWeight,
+              }
+            : prospectiveMoneylineEvidence;
           const evaluation = gameMarketModelService.evaluateMarkets(game, marketResult.markets, model, {
             independentDecisiveObservations: sportEvidence.independentDecisiveObservations,
             calibrationGap: sportEvidence.calibrationGap,
             byMarket: {
-              MONEYLINE: gameMarketPredictionRepository.getEvidenceFor(game.sport, 'MONEYLINE'),
+              MONEYLINE: moneylineEvidence,
               SPREAD: gameMarketPredictionRepository.getEvidenceFor(game.sport, 'SPREAD'),
               TOTAL: gameMarketPredictionRepository.getEvidenceFor(game.sport, 'TOTAL'),
             },
@@ -492,7 +515,7 @@ export class DecisionBoardService {
   async scanGames(games: NormalizedApexGame[], sportFilter: ApexSportFilter, scheduleDate: string, requestedMaxGames: number): Promise<DecisionBoardResponse> {
     const maxGames = Math.max(1, Math.min(48, Math.floor(requestedMaxGames || (sportFilter === 'ALL' ? 48 : sportFilter === 'TENNIS' ? 30 : 12))));
     const sportOrder: ApexSport[] = ['MLB', 'NFL', 'NBA', 'WNBA', 'NHL', 'SOCCER', 'TENNIS'];
-    const candidates = games.filter((g) => g.status === 'UPCOMING' && g.startTime && Date.parse(g.startTime) > Date.now() &&
+    const candidates = games.filter((g) => g.status === 'UPCOMING' && g.pregameBetEligible !== false && g.startTime && Date.parse(g.startTime) > Date.now() &&
       (sportFilter === 'ALL' || g.sport === sportFilter) && isTennisDecisionBoardEligible(g))
       .sort((a,b) => Date.parse(a.startTime) - Date.parse(b.startTime));
 

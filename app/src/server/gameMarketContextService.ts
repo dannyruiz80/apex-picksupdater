@@ -37,6 +37,24 @@ export interface NflStrengthContextV2 {
 }
 
 
+
+export interface WnbaProductionContextV1 {
+  homeRecent5Margin: number | null;
+  awayRecent5Margin: number | null;
+  homeRecent10Margin: number | null;
+  awayRecent10Margin: number | null;
+  homeRecent5Total: number | null;
+  awayRecent5Total: number | null;
+  homeRecent10Total: number | null;
+  awayRecent10Total: number | null;
+  homeRestDays: number | null;
+  awayRestDays: number | null;
+  homeBackToBack: boolean | null;
+  awayBackToBack: boolean | null;
+  homeVenueSampleCount: number;
+  awayVenueSampleCount: number;
+}
+
 export interface GameMarketContextV2 {
   contextVersion: 'APEX_GAME_CONTEXT_V2';
   observedAt: string;
@@ -49,6 +67,7 @@ export interface GameMarketContextV2 {
   awayRestDays: number | null;
   mlb: MlbStarterContextV2 | null;
   nfl: NflStrengthContextV2 | null;
+  wnba: WnbaProductionContextV1 | null;
   notes: string[];
 }
 
@@ -289,6 +308,28 @@ async function buildNflContext(home: TeamHistorySummary, away: TeamHistorySummar
   };
 }
 
+
+function buildWnbaContext(home: TeamHistorySummary, away: TeamHistorySummary, eventStart: string): WnbaProductionContextV1 {
+  const hr = restDays(home, eventStart);
+  const ar = restDays(away, eventStart);
+  return {
+    homeRecent5Margin: recentMean(home, 'margin', 5),
+    awayRecent5Margin: recentMean(away, 'margin', 5),
+    homeRecent10Margin: recentMean(home, 'margin', 10),
+    awayRecent10Margin: recentMean(away, 'margin', 10),
+    homeRecent5Total: recentMean(home, 'total', 5),
+    awayRecent5Total: recentMean(away, 'total', 5),
+    homeRecent10Total: recentMean(home, 'total', 10),
+    awayRecent10Total: recentMean(away, 'total', 10),
+    homeRestDays: hr,
+    awayRestDays: ar,
+    homeBackToBack: hr === null ? null : hr <= 1,
+    awayBackToBack: ar === null ? null : ar <= 1,
+    homeVenueSampleCount: home.venueSampleCount,
+    awayVenueSampleCount: away.venueSampleCount,
+  };
+}
+
 export class GameMarketContextService {
   async build(game: NormalizedApexGame, home: TeamHistorySummary, away: TeamHistorySummary): Promise<GameMarketContextV2> {
     const notes: string[] = [];
@@ -303,6 +344,7 @@ export class GameMarketContextService {
 
     let mlb: MlbStarterContextV2 | null = null;
     let nfl: NflStrengthContextV2 | null = null;
+    let wnba: WnbaProductionContextV1 | null = null;
     if (game.sport === 'MLB') {
       mlb = await getMlbContext(game);
       if (!mlb.homeProbablePitcher || !mlb.awayProbablePitcher) notes.push('Probable starter identity is incomplete; starter adjustment remains partial.');
@@ -316,13 +358,19 @@ export class GameMarketContextService {
       nfl = await buildNflContext(home, away, game.startTime);
       notes.push('NFL V2 shadow uses recent scoring-margin form, rest, net yards/play and turnover-margin context from completed prior games.');
       notes.push('True EPA remains disabled until a separately validated expected-points model is available; Apex will not relabel yards/play as EPA.');
+    } else if (game.sport === 'WNBA') {
+      wnba = buildWnbaContext(home, away, game.startTime);
+      notes.push('WNBA production context uses point-in-time completed games only: recent 5/10 form, venue samples and verified rest state.');
+      notes.push('WNBA rest/back-to-back state is audit context in v1.14.8 and does not independently manufacture an edge.');
     }
 
     const specializedAvailable = game.sport === 'MLB'
       ? Boolean(mlb?.homeProbablePitcher || mlb?.awayProbablePitcher)
       : game.sport === 'NFL'
         ? Boolean(nfl?.homeStrengthIndex !== null && nfl?.awayStrengthIndex !== null)
-        : false;
+        : game.sport === 'WNBA'
+          ? Boolean(wnba && home.sampleCount >= 6 && away.sampleCount >= 6)
+          : false;
 
     return {
       contextVersion: 'APEX_GAME_CONTEXT_V2',
@@ -331,6 +379,7 @@ export class GameMarketContextService {
       ...generic,
       mlb,
       nfl,
+      wnba,
       notes,
     };
   }
