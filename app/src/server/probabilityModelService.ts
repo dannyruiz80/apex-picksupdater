@@ -186,9 +186,15 @@ export class ProbabilityModelService {
     const decisiveCount = seasonOverCount + seasonUnderCount;
     const seasonEmpiricalHitRate = decisiveCount > 0 ? seasonOverCount / decisiveCount : 0.50;
 
-    // Distribution projection using standard normal CDF z-score
+    // Distribution projection. Rare discrete count markets (notably batter home runs)
+    // must NOT use a normal approximation: it materially overstates extreme tails such
+    // as OVER 1.5 HR when a player averages only a few hundredths of a HR per game.
+    // Use a Poisson tail for batter home runs; retain the transparent normal baseline
+    // for the legacy continuous-ish/count markets until their own validated models exist.
     const zScore = (seasonMean - line) / seasonStdDev;
-    const seasonDistributionEstimate = this.normalCDF(zScore);
+    const seasonDistributionEstimate = quote.providerMarketKey === 'batter_home_runs'
+      ? this.poissonOverProbability(Math.max(0, seasonMean), line)
+      : this.normalCDF(zScore);
 
     const seasonBaselineOver =
       ProbabilityModelService.SEASON_EMPIRICAL_WEIGHT * seasonEmpiricalHitRate +
@@ -220,16 +226,29 @@ export class ProbabilityModelService {
     // D. Market Blending based on Sample Reliability
     // When sample is VERY_LIMITED (R=0.25), market weight is high (0.75).
     // When sample is STRONG (R=0.90), historical weight is high (0.75), market is 0.25.
-    const { historicalWeight, marketWeight } = this.getMarketHistoricalWeights(reliabilityTier);
-    const marketNoVigOver = marketImplied?.noVigOverProbability ?? 0.50;
+    const baseBlendWeights = this.getMarketHistoricalWeights(reliabilityTier);
+    const marketBlendEligible = Boolean(
+      marketImplied &&
+      marketImplied.isSingleSided === false &&
+      marketImplied.noVigOverProbability !== null
+    );
+    const historicalWeight = marketBlendEligible ? baseBlendWeights.historicalWeight : 1.0;
+    const marketWeight = marketBlendEligible ? baseBlendWeights.marketWeight : 0.0;
+    const marketNoVigOver = marketBlendEligible ? marketImplied!.noVigOverProbability! : null;
 
     const rawBlendedOver =
-      historicalWeight * historicalOverProbability + marketWeight * marketNoVigOver;
+      historicalWeight * historicalOverProbability + marketWeight * (marketNoVigOver ?? 0.0);
 
     // E. Probability Clamping Bounds
+    // The legacy 12%-88% clamp is intentionally NOT appropriate for rare-event HR
+    // tails. A global 12% floor turned genuine sub-1% OVER 1.5 HR probabilities into
+    // artificial 12% probabilities and then generated enormous fake EV at longshot odds.
+    // Home-run props therefore use near-open bounds while the legacy bounds remain
+    // unchanged for other markets.
+    const probabilityBounds = this.getProbabilityBoundsForMarket(quote.providerMarketKey);
     const clampedOver = Math.max(
-      ProbabilityModelService.MIN_PROBABILITY_BOUND,
-      Math.min(ProbabilityModelService.MAX_PROBABILITY_BOUND, rawBlendedOver)
+      probabilityBounds.min,
+      Math.min(probabilityBounds.max, rawBlendedOver)
     );
     const boundsApplied = clampedOver !== rawBlendedOver;
 
@@ -292,15 +311,15 @@ export class ProbabilityModelService {
       l5SampleCount,
       l5Weight: this.round4(l5Weight),
       historicalOverProbability: this.round4(historicalOverProbability),
-      marketNoVigOverProbability: this.round4(marketNoVigOver),
+      marketNoVigOverProbability: marketNoVigOver !== null ? this.round4(marketNoVigOver) : null,
       sampleReliabilityTier: reliabilityTier,
       sampleReliabilityFactor: reliabilityFactor,
       historicalWeight: this.round4(historicalWeight),
       marketWeight: this.round4(marketWeight),
       rawBlendedOverProbability: this.round4(rawBlendedOver),
       boundsApplied,
-      clampedMinBound: ProbabilityModelService.MIN_PROBABILITY_BOUND,
-      clampedMaxBound: ProbabilityModelService.MAX_PROBABILITY_BOUND,
+      clampedMinBound: probabilityBounds.min,
+      clampedMaxBound: probabilityBounds.max,
       isIntegerLine,
       pushProbability: this.round4(pushProbability),
     };
@@ -372,8 +391,9 @@ export class ProbabilityModelService {
       };
     }
 
-    // Single-sided quote
-    const isOverPresent = rawOver !== null;
+    // Single-sided quote. Raw implied probability is observable, but a no-vig
+    // probability is NOT derivable without the opposite side. Keep no-vig fields null
+    // and do not feed this price back into the model probability.
     return {
       sportsbook: quote.bookmakerTitle || quote.bookmakerKey || 'Consensus Bookmaker',
       overOddsAmerican: overAmerican,
@@ -383,8 +403,8 @@ export class ProbabilityModelService {
       rawOverImplied: rawOver !== null ? this.round4(rawOver) : null,
       rawUnderImplied: rawUnder !== null ? this.round4(rawUnder) : null,
       bookmakerVig: null,
-      noVigOverProbability: isOverPresent ? this.round4(rawOver!) : null,
-      noVigUnderProbability: !isOverPresent ? this.round4(rawUnder!) : null,
+      noVigOverProbability: null,
+      noVigUnderProbability: null,
       isSingleSided: true,
     };
   }
@@ -506,6 +526,42 @@ export class ProbabilityModelService {
     const variance =
       values.reduce((acc, v) => acc + Math.pow(v - mean, 2), 0) / (values.length - 1);
     return Math.sqrt(variance);
+  }
+
+
+  /**
+   * Market-aware probability bounds. The global 12%-88% bounds are retained for
+   * legacy baseline markets, but rare batter-HR tails require near-open bounds so a
+   * probability floor cannot manufacture value where the data says the event is rare.
+   */
+  private getProbabilityBoundsForMarket(providerMarketKey: string): { min: number; max: number } {
+    if (providerMarketKey === 'batter_home_runs') {
+      return { min: 0.0001, max: 0.9999 };
+    }
+    return {
+      min: ProbabilityModelService.MIN_PROBABILITY_BOUND,
+      max: ProbabilityModelService.MAX_PROBABILITY_BOUND,
+    };
+  }
+
+  /**
+   * P(X > line) for X ~ Poisson(lambda). For a half-point line such as 1.5 this is
+   * P(X >= 2). This is materially more appropriate than a normal tail for rare,
+   * non-negative discrete events such as batter home runs.
+   */
+  private poissonOverProbability(lambda: number, line: number): number {
+    if (!Number.isFinite(lambda) || lambda < 0 || !Number.isFinite(line)) return 0;
+    const minWins = Math.floor(line) + 1;
+    if (minWins <= 0) return 1;
+    if (lambda === 0) return 0;
+
+    let term = Math.exp(-lambda); // P(X=0)
+    let cumulative = term;
+    for (let k = 1; k < minWins; k++) {
+      term *= lambda / k;
+      cumulative += term;
+    }
+    return Math.max(0, Math.min(1, 1 - cumulative));
   }
 
   /**
@@ -753,13 +809,85 @@ export class ProbabilityModelService {
       details: `Run 1 P(Over)=${evalCopy1.apexOverProbability}, Run 2 P(Over)=${evalCopy2.apexOverProbability}`,
     });
 
-    // Test 10: Wrong Player ID Rejection
+    // Test 10: Rare-event batter HR tails must not be inflated to the legacy 12% floor.
+    const rareHrQuote: NormalizedPlayerPropQuote = {
+      ...mockLowderQuote,
+      quoteId: 'verify_rare_hr_1.5',
+      playerId: 'rare-hr-player',
+      playerDisplayName: 'Rare HR Player',
+      providerMarketKey: 'batter_home_runs',
+      marketCategory: 'HOME_RUNS',
+      line: 1.5,
+      overOddsAmerican: +42500,
+      overOddsDecimal: 426.0,
+      underOddsAmerican: null,
+      underOddsDecimal: null,
+      historicalStats: {
+        ...mockLowderQuote.historicalStats!,
+        playerId: 'rare-hr-player',
+        playerDisplayName: 'Rare HR Player',
+        providerMarketKey: 'batter_home_runs',
+        statCategory: 'Batting',
+        targetLine: 1.5,
+        totalGamesRetrieved: 30,
+        validGamesUsed: 30,
+        l5SampleCount: 5,
+        l5Average: 0.0,
+        l5Values: [0, 0, 0, 0, 0],
+        l5OverHitRate: 0.0,
+        l5UnderHitRate: 1.0,
+        l5OverCount: 0,
+        l5UnderCount: 5,
+        l10SampleCount: 10,
+        l10Average: 0.0,
+        l10Values: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+        l10OverHitRate: 0.0,
+        l10UnderHitRate: 1.0,
+        l10OverCount: 0,
+        l10UnderCount: 10,
+        seasonSampleCount: 30,
+        seasonAverage: 0.02,
+        seasonOverHitRate: 0.0,
+        seasonUnderHitRate: 1.0,
+        seasonOverCount: 0,
+        seasonUnderCount: 30,
+        seasonPushCount: 0,
+        recentGameLogs: [
+          { eventId: 'rh1', gameDate: '2026-08-30', opponent: 'A', statValue: 0, statName: 'HR', rawStats: {} },
+          { eventId: 'rh2', gameDate: '2026-08-29', opponent: 'B', statValue: 0, statName: 'HR', rawStats: {} },
+          { eventId: 'rh3', gameDate: '2026-08-28', opponent: 'C', statValue: 0, statName: 'HR', rawStats: {} },
+          { eventId: 'rh4', gameDate: '2026-08-27', opponent: 'D', statValue: 0, statName: 'HR', rawStats: {} },
+          { eventId: 'rh5', gameDate: '2026-08-26', opponent: 'E', statValue: 0, statName: 'HR', rawStats: {} },
+          { eventId: 'rh6', gameDate: '2026-08-25', opponent: 'F', statValue: 0, statName: 'HR', rawStats: {} },
+          { eventId: 'rh7', gameDate: '2026-08-24', opponent: 'G', statValue: 0, statName: 'HR', rawStats: {} },
+          { eventId: 'rh8', gameDate: '2026-08-23', opponent: 'H', statValue: 0, statName: 'HR', rawStats: {} },
+          { eventId: 'rh9', gameDate: '2026-08-22', opponent: 'I', statValue: 0, statName: 'HR', rawStats: {} },
+          { eventId: 'rh10', gameDate: '2026-08-21', opponent: 'J', statValue: 0, statName: 'HR', rawStats: {} },
+        ],
+      },
+    };
+    const rareHrEval = this.evaluatePropProbability(rareHrQuote);
+    const rareHrOver = rareHrEval.apexOverProbability ?? 1;
+    const test10Passed =
+      rareHrEval.isAvailable === true &&
+      rareHrOver < 0.01 &&
+      (rareHrEval.components?.clampedMinBound ?? 1) < 0.01 &&
+      rareHrEval.marketImplied?.isSingleSided === true &&
+      rareHrEval.marketImplied?.noVigOverProbability === null &&
+      (rareHrEval.components?.marketWeight ?? 1) === 0;
+    criticalTests.push({
+      testName: 'RARE_EVENT_HR_TAIL_NOT_FORCED_TO_12_PERCENT',
+      status: test10Passed ? 'PASS' : 'FAIL',
+      details: `HR O1.5 P(Over)=${rareHrOver}, minBound=${rareHrEval.components?.clampedMinBound}, singleSided=${rareHrEval.marketImplied?.isSingleSided}, noVig=${rareHrEval.marketImplied?.noVigOverProbability}, marketWeight=${rareHrEval.components?.marketWeight}`,
+    });
+
+    // Test 11: Wrong Player ID Rejection
     const wrongPlayerQuote = { ...mockLowderQuote, playerId: '' };
     const wrongEval = this.evaluatePropProbability(wrongPlayerQuote);
-    const test10Passed = wrongEval.isAvailable === false;
+    const test11Passed = wrongEval.isAvailable === false;
     criticalTests.push({
       testName: 'WRONG_PLAYER_ID_REJECTED',
-      status: test10Passed ? 'PASS' : 'FAIL',
+      status: test11Passed ? 'PASS' : 'FAIL',
       details: `Empty player ID returned available=${wrongEval.isAvailable}`,
     });
 

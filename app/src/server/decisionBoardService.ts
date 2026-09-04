@@ -316,6 +316,60 @@ export function selectDecisionBoardSlateRows(
 }
 
 export class DecisionBoardService {
+  private recentQualifiedSlateCache = new Map<string, { createdAtMs: number; picks: DecisionBoardPick[] }>();
+  private readonly recentQualifiedSlateTtlMs = 10 * 60 * 1000;
+
+  private recentSlateKey(sportFilter: ApexSportFilter, scheduleDate: string): string {
+    return `${sportFilter}|${scheduleDate}`;
+  }
+
+  /**
+   * Keep the full production-qualified slate in server memory so Parlay Lab can reuse
+   * the exact picks the user just verified on the Picks board without spending more
+   * provider credits or shrinking back to a tiny independent event sample.
+   */
+  cacheQualifiedSlatePicks(sportFilter: ApexSportFilter, scheduleDate: string, picks: DecisionBoardPick[]): void {
+    const deduped = rankDecisionBoardPicks(picks, 500);
+    this.recentQualifiedSlateCache.set(this.recentSlateKey(sportFilter, scheduleDate), {
+      createdAtMs: Date.now(),
+      picks: deduped,
+    });
+    if (sportFilter === 'ALL') {
+      const bySport = new Map<ApexSport, DecisionBoardPick[]>();
+      for (const pick of deduped) {
+        const bucket = bySport.get(pick.sport) || [];
+        bucket.push(pick);
+        bySport.set(pick.sport, bucket);
+      }
+      for (const [sport, rows] of bySport.entries()) {
+        this.recentQualifiedSlateCache.set(this.recentSlateKey(sport, scheduleDate), {
+          createdAtMs: Date.now(),
+          picks: rankDecisionBoardPicks(rows, 500),
+        });
+      }
+    }
+  }
+
+  getRecentQualifiedPicks(sportFilter: ApexSportFilter, scheduleDate: string): DecisionBoardPick[] {
+    const now = Date.now();
+    const read = (filter: ApexSportFilter) => {
+      const entry = this.recentQualifiedSlateCache.get(this.recentSlateKey(filter, scheduleDate));
+      if (!entry) return [] as DecisionBoardPick[];
+      if (now - entry.createdAtMs > this.recentQualifiedSlateTtlMs) {
+        this.recentQualifiedSlateCache.delete(this.recentSlateKey(filter, scheduleDate));
+        return [] as DecisionBoardPick[];
+      }
+      return entry.picks;
+    };
+    const exact = read(sportFilter);
+    if (exact.length) return rankDecisionBoardPicks(exact, 500);
+    if (sportFilter !== 'ALL') {
+      return rankDecisionBoardPicks(read('ALL').filter((pick) => pick.sport === sportFilter), 500);
+    }
+    const sports: ApexSport[] = ['MLB', 'NFL', 'NBA', 'WNBA', 'NHL', 'SOCCER', 'TENNIS'];
+    return rankDecisionBoardPicks(sports.flatMap((sport) => read(sport)), 500);
+  }
+
   async evaluateEvent(game: NormalizedApexGame): Promise<{
     status: DecisionBoardStatus;
     message: string;
@@ -498,6 +552,11 @@ export class DecisionBoardService {
       if (evaluated.status === 'QUOTA_BLOCKED') { status='QUOTA_BLOCKED'; notes.push('Scan stopped by the provider quota guard.'); break; }
     }
 
+    // Preserve the complete qualified slate in a short-lived in-memory handoff cache.
+    // The visible board is still diversified/ranked to 12 cards, but Parlay Lab can
+    // consume every verified leg from this exact scan instead of re-scanning a tiny slate.
+    this.cacheQualifiedSlatePicks(sportFilter, scheduleDate, picks);
+
     const ranked = diversifyDecisionBoardPicks(picks, 12);
     if (ranked.length) status = 'SUCCESS';
     else if (status !== 'NOT_CONFIGURED' && status !== 'QUOTA_BLOCKED') status = 'NO_QUALIFIED_PICKS';
@@ -510,7 +569,7 @@ export class DecisionBoardService {
     notes.push('Visible recommendations are sport-diversified only when another sport actually has a production-qualified pick; thresholds are never lowered to force representation.');
     notes.push('Game-market probabilities are produced independently from public historical team results; current sportsbook prices enter only after forecasting for EV/edge evaluation.');
     notes.push('APEX_GAME_MARKET_V1 remains EARLY EVIDENCE and is subject to calibration/integrity guardrails.');
-    notes.push('Tennis match winner now uses APEX_TENNIS_MATCH_WINNER_V1 from completed ESPN match history; tennis spreads, totals and player props remain fail-closed.');
+    notes.push('Tennis match winner uses APEX_TENNIS_MATCH_WINNER_V1 from completed ESPN singles history; v1.14.7 adds side-identity, two-way complement, cross-book dispersion, and event-level model/market disagreement alignment audits before any recommendation can qualify.');
     notes.push('Existing player-prop production models remain ranked in the same board; future-date prop markets may not be posted yet, so a future slate can legitimately rely more heavily on game markets.');
 
     const coverageRows = coverageBySport();

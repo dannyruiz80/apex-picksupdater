@@ -17,6 +17,8 @@ const MAX_COMBINED_EV_FOR_AUTO_QUALIFY = 25;
 const MIN_COMBINED_EV = 3;
 const MIN_INDEPENDENCE_PROBABILITY = 0.12;
 const PARLAY_SLATE_CACHE_TTL_MS = 5 * 60 * 1000;
+const DEFAULT_PARLAY_MAX_GAMES = 24;
+const MAX_PARLAY_SCAN_GAMES = 36;
 
 interface ParlayBuildMetrics {
   combinationsConsidered: number;
@@ -92,12 +94,24 @@ function toLeg(p:DecisionBoardPick,book:string,oddsAmerican:number):ParlayLeg{
 }
 
 /** Round-robin slate selection keeps ALL SPORTS from becoming a one-sport scan. */
-export function selectParlaySlateRows(games:NormalizedApexGame[],sportFilter:ApexSportFilter,maxGames:number,nowMs=Date.now()):NormalizedApexGame[]{
+export function selectParlaySlateRows(
+  games:NormalizedApexGame[],
+  sportFilter:ApexSportFilter,
+  maxGames:number,
+  nowMs=Date.now(),
+  preferredEventIds:ReadonlySet<string>=new Set<string>(),
+):NormalizedApexGame[]{
   const candidates=games.filter(g=>g.status==='UPCOMING'&&g.startTime&&Date.parse(g.startTime)>nowMs&&(sportFilter==='ALL'||g.sport===sportFilter))
-    .sort((a,b)=>Date.parse(a.startTime)-Date.parse(b.startTime));
+    .sort((a,b)=>{
+      const pa=preferredEventIds.has(a.eventId)?0:1; const pb=preferredEventIds.has(b.eventId)?0:1;
+      if(pa!==pb)return pa-pb;
+      return Date.parse(a.startTime)-Date.parse(b.startTime);
+    });
   if(sportFilter!=='ALL')return candidates.slice(0,maxGames);
   const bySport=new Map<ApexSport,NormalizedApexGame[]>();
   for(const g of candidates){const bucket=bySport.get(g.sport)||[];bucket.push(g);bySport.set(g.sport,bucket);}
+  // Fairness remains round-robin by sport, but within each sport events from the most
+  // recent Picks scan are evaluated first so Parlay Lab reuses proven candidates.
   const sports=[...bySport.keys()]; const out:NormalizedApexGame[]=[]; let round=0;
   while(out.length<maxGames){let added=false;for(const sport of sports){const g=bySport.get(sport)?.[round];if(g){out.push(g);added=true;if(out.length>=maxGames)break;}}if(!added)break;round++;}
   return out;
@@ -110,6 +124,26 @@ export function selectEventRepresentatives(eligible:DecisionBoardPick[]):Decisio
 }
 export function selectStraightAlternatives(eligible:DecisionBoardPick[],limit=3):DecisionBoardPick[]{
   return selectEventRepresentatives(eligible).slice(0,Math.max(0,limit));
+}
+
+/**
+ * Bound the fallback search so a slate with dozens of qualified markets cannot explode
+ * into millions of 4-leg combinations. Keep at most two strong alternatives per event
+ * across the best 16 distinct events; this is enough to recover common-book compatibility
+ * without freezing Parlay Lab.
+ */
+export function selectBoundedAlternativeLegPool(eligible:DecisionBoardPick[],maxEvents=16,perEvent=2):DecisionBoardPick[]{
+  const ranked=rankDecisionBoardPicks(eligible,500);
+  const eventOrder:string[]=[]; const byEvent=new Map<string,DecisionBoardPick[]>();
+  for(const pick of ranked){
+    if(!byEvent.has(pick.eventId)){
+      if(eventOrder.length>=Math.max(1,maxEvents))continue;
+      eventOrder.push(pick.eventId); byEvent.set(pick.eventId,[]);
+    }
+    const bucket=byEvent.get(pick.eventId);
+    if(bucket&&bucket.length<Math.max(1,perEvent))bucket.push(pick);
+  }
+  return eventOrder.flatMap(id=>byEvent.get(id)||[]);
 }
 
 export class ParlayService {
@@ -157,8 +191,12 @@ export class ParlayService {
   }
 
   async scan(games:NormalizedApexGame[],sportFilter:ApexSportFilter,scheduleDate:string,legCountRaw:number,maxGamesRaw:number,scheduleDatesScanned:string[]=[]):Promise<ParlayScanResponse>{
-    const legCount=Math.max(2,Math.min(4,Math.floor(legCountRaw||2))); const maxGames=Math.max(legCount,Math.min(12,Math.floor(maxGamesRaw||10)));
-    const rows=selectParlaySlateRows(games,sportFilter,maxGames);
+    const legCount=Math.max(2,Math.min(4,Math.floor(legCountRaw||2)));
+    const maxGames=Math.max(legCount,Math.min(MAX_PARLAY_SCAN_GAMES,Math.floor(maxGamesRaw||DEFAULT_PARLAY_MAX_GAMES)));
+    const scanDates=scheduleDatesScanned.length?scheduleDatesScanned:[scheduleDate];
+    const recentBoardPicks=rankDecisionBoardPicks(scanDates.flatMap(d=>decisionBoardService.getRecentQualifiedPicks(sportFilter,d)),500);
+    const preferredEventIds=new Set(recentBoardPicks.map(p=>p.eventId));
+    const rows=selectParlaySlateRows(games,sportFilter,maxGames,Date.now(),preferredEventIds);
     const dates=scheduleDatesScanned.length?scheduleDatesScanned:[...new Set(rows.map(g=>(g.startTime||'').slice(0,10)).filter(Boolean))];
     const emptyFunnel:ParlayFunnelStats={scheduleEventsConsidered:rows.length,cachedEventsSeeded:0,liveEventsEvaluated:0,distinctEligibleEvents:0,representativeLegs:0,possibleIndependentCombinations:0,commonBookCombinations:0,valueClearedCombinations:0,fallbackAlternativeLegsUsed:false};
     if(!rows.length)return {status:'NO_UPCOMING_EVENTS',message:'No verified upcoming events are available for parlay scanning.',generatedAt:new Date().toISOString(),sportFilter,scheduleDate,scheduleDatesScanned:dates,
@@ -171,27 +209,38 @@ export class ParlayService {
     if(cached&&now-cached.createdAtMs<=PARLAY_SLATE_CACHE_TTL_MS&&cachedHasEnoughFreshEvents){raw=[...cached.rawPicks];liveEventsEvaluated=0;cachedEventsSeeded=new Set(cached.rawPicks.map(p=>p.eventId)).size;providerStatus=cached.providerStatus;cacheStatus='HIT';}
     else {
       if(cached)this.slateCache.delete(key);
-      // Zero-credit saved recommendations seed the pool first. They may be enough to avoid a live re-evaluation.
-      const selectedIds=new Set(rows.map(g=>g.eventId)); const saved:DecisionBoardPick[]=[];
+      // Zero-credit current Picks-board recommendations seed first. Saved prop snapshots
+      // are merged next. This prevents Parlay Lab from ignoring a slate that the user
+      // just proved contains many production-qualified recommendations.
+      const selectedIds=new Set(rows.map(g=>g.eventId));
+      const recentSeed=recentBoardPicks.filter(p=>selectedIds.has(p.eventId));
+      const saved:DecisionBoardPick[]=[];
       for(const d of [...new Set(rows.map(g=>(g.startTime||'').slice(0,10)).filter(Boolean))]){
         saved.push(...decisionBoardService.getSavedBoard(sportFilter,d).picks.filter(p=>selectedIds.has(p.eventId)));
       }
-      raw.push(...saved); const savedEventIds=new Set(saved.map(p=>p.eventId)); cachedEventsSeeded=savedEventIds.size; if(saved.length)cacheStatus='SAVED_SEED';
+      raw.push(...recentSeed,...saved);
+      const seededEventIds=new Set([...recentSeed,...saved].map(p=>p.eventId));
+      cachedEventsSeeded=seededEventIds.size;
+      if(recentSeed.length)cacheStatus='SAVED_SEED'; else if(saved.length)cacheStatus='SAVED_SEED';
 
       const preliminaryReasons:Record<string,number>={}; const preliminaryEligible=this.getEligible(raw,preliminaryReasons); const preliminaryReps=selectEventRepresentatives(preliminaryEligible);
       const preliminaryBuilt=this.buildTickets(preliminaryReps,legCount,{});
       const enoughCachedBreadth=preliminaryReps.length>=Math.min(maxGames,Math.max(6,legCount+2));
-      const canUseSavedOnly=enoughCachedBreadth&&(preliminaryBuilt.tickets.length>0||preliminaryBuilt.reviewTickets.length>=2);
+      // A production-qualified ticket from the already-verified Picks slate is enough
+      // to avoid unnecessary provider calls. Review-only output still seeks more breadth.
+      const canUseSavedOnly=preliminaryBuilt.tickets.length>0||(enoughCachedBreadth&&preliminaryBuilt.reviewTickets.length>=2);
 
       if(!canUseSavedOnly){
-        // Evaluate uncached events first. Events with a fresh saved pick are enrichment-only and run last.
-        const liveOrder=[...rows.filter(g=>!savedEventIds.has(g.eventId)),...rows.filter(g=>savedEventIds.has(g.eventId))];
+        // Evaluate unseeded events first. Events already represented by fresh board/cache
+        // picks are enrichment-only and run last.
+        const liveOrder=[...rows.filter(g=>!seededEventIds.has(g.eventId)),...rows.filter(g=>seededEventIds.has(g.eventId))];
         for(const game of liveOrder){
           const evaluated=await decisionBoardService.evaluateEvent(game); liveEventsEvaluated++; raw.push(...evaluated.picks);
           if(evaluated.status==='NOT_CONFIGURED'){providerStatus='NOT_CONFIGURED';break;}
           if(evaluated.status==='QUOTA_BLOCKED'){providerStatus='QUOTA_BLOCKED';break;}
-          // After at least 8 broad events, stop enrichment early once multiple executable tickets exist.
-          if(liveEventsEvaluated>=Math.min(8,rows.length)){
+          // Stop enrichment once enough distinct breadth exists and multiple executable
+          // tickets have been proven. The minimum grows with requested leg count.
+          if(liveEventsEvaluated>=Math.min(Math.max(6,legCount+2),rows.length)){
             const quickReasons:Record<string,number>={}; const quickEligible=this.getEligible(raw,quickReasons); const quickReps=selectEventRepresentatives(quickEligible); const quick=this.buildTickets(quickReps,legCount,{});
             if(quick.tickets.length>=3)break;
           }
@@ -203,7 +252,9 @@ export class ParlayService {
     const rejectedReasons:Record<string,number>={}; const eligible=this.getEligible(raw,rejectedReasons); const representatives=selectEventRepresentatives(eligible);
     const preferred=this.buildTickets(representatives,legCount,rejectedReasons); let built=preferred; let fallbackAlternativeLegsUsed=false;
     if(preferred.tickets.length===0&&eligible.length>representatives.length){
-      const fallbackReasons:Record<string,number>={}; const fallback=this.buildTickets(eligible,legCount,fallbackReasons);
+      const fallbackReasons:Record<string,number>={};
+      const boundedAlternatives=selectBoundedAlternativeLegPool(eligible,Math.min(16,maxGames),2);
+      const fallback=this.buildTickets(boundedAlternatives,legCount,fallbackReasons);
       if(fallback.tickets.length>0||fallback.reviewTickets.length>preferred.reviewTickets.length){built=fallback;fallbackAlternativeLegsUsed=true;for(const [k,v] of Object.entries(fallbackReasons))rejectedReasons[k]=(rejectedReasons[k]||0)+v;}
     }
     const straightAlternatives=selectStraightAlternatives(eligible,3);
@@ -217,10 +268,10 @@ export class ParlayService {
     return {status,message:built.tickets.length?`${built.tickets.length} executable ${legCount}-leg parlay candidate${built.tickets.length===1?'':'s'} cleared the parlay gate.`:noParlayMessage,
       generatedAt:new Date().toISOString(),sportFilter,scheduleDate,scheduleDatesScanned:dates,requestedLegCount:legCount,gamesScanned:rows.length,eligibleLegCount:eligible.length,
       qualifiedTicketCount:built.tickets.length,tickets:built.tickets,reviewTickets:built.reviewTickets,eligibleLegs:eligible,straightAlternatives:built.tickets.length?[]:straightAlternatives,rejectedReasons,funnel,cacheStatus,
-      notes:['Parlay discovery considers up to 10 events by default (12 maximum) and can span the next seven schedule days when the selected date is late or sparse.',
+      notes:['Parlay discovery considers up to 24 events by default (36 maximum) and can span the next seven schedule days when the selected date is late or sparse.',
         'ALL SPORTS mode round-robins sports before repeating one sport so a single league cannot dominate the scan.',
-        'Fresh saved recommendations seed the scan at zero provider credits; a five-minute slate cache prevents repeated clicks or leg-count changes from refetching the same live slate.',
-        'The first parlay pass uses only the strongest production-qualified leg from each event. Alternative legs are considered only if that preferred pool cannot produce a qualified ticket.',
+        'Fresh recommendations from the current Picks-board scan seed Parlay Lab at zero provider credits; saved prop snapshots are merged next, and a five-minute slate cache prevents repeated clicks or leg-count changes from refetching the same live slate.',
+        'The first parlay pass uses only the strongest production-qualified leg from each event. If common-book compatibility fails, a bounded fallback considers up to two strong alternatives per event without combinatorial explosion.',
         'Only production QUALIFIED legs are eligible. REVIEW/VERIFY/PASS game markets cannot enter a recommended parlay.',
         'Same-event parlays are blocked until Apex has a validated joint-distribution/correlation model.',
         'A recommended ticket must have one common sportsbook offering the exact line/side for every leg.',

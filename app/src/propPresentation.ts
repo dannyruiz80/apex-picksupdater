@@ -1,3 +1,5 @@
+import type { NormalizedPlayerPropQuote } from './types';
+
 export const PROP_MARKET_LABELS: Record<string, string> = {
   pitcher_strikeouts: 'Pitcher Strikeouts',
   batter_home_runs: 'Home Runs',
@@ -53,4 +55,32 @@ export function formatPropSelectionLabel(
   const sideText = side ? side.toUpperCase() : '';
   const lineText = line === null || line === undefined ? '' : String(line);
   return `${playerName} · ${market} ${sideText} ${lineText}`.replace(/\s+/g, ' ').trim();
+}
+
+
+export function canonicalQualifiedPropQuotes(props: NormalizedPlayerPropQuote[]): NormalizedPlayerPropQuote[] {
+  const best = new Map<string, NormalizedPlayerPropQuote>();
+  for (const quote of props) {
+    const rec = quote.valueAnalysis?.bestRecommendation;
+    const selected = rec?.selectedAnalysis;
+    if (rec?.recommendationStatus !== 'QUALIFIES' || !rec.side || !selected) continue;
+    // Exact recommendation identity: event + player + market + line + recommended side.
+    const player = quote.playerId || quote.playerDisplayName.toLowerCase();
+    const key = `${quote.apexEventId}::${player}::${quote.providerMarketKey || quote.marketCategory}::${quote.line}::${rec.side}`;
+    const current = best.get(key);
+    const currentAnalysis = current?.valueAnalysis?.bestRecommendation?.selectedAnalysis;
+    const currentOdds = currentAnalysis?.oddsAmerican ?? -100000;
+    const candidateOdds = selected.oddsAmerican ?? -100000;
+    if (!current || candidateOdds > currentOdds || (candidateOdds === currentOdds && quote.quoteId < current.quoteId)) {
+      best.set(key, quote);
+    }
+  }
+  return [...best.values()].sort((a, b) => {
+    const aa = a.valueAnalysis?.bestRecommendation?.selectedAnalysis;
+    const bb = b.valueAnalysis?.bestRecommendation?.selectedAnalysis;
+    const ap = aa?.apexProbability ?? -1;
+    const bp = bb?.apexProbability ?? -1;
+    if (ap !== bp) return bp - ap;
+    return (bb?.expectedValuePercent ?? -999) - (aa?.expectedValuePercent ?? -999);
+  });
 }

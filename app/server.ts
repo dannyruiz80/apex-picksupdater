@@ -259,7 +259,7 @@ async function startServer() {
     const sport = VALID_SPORTS.has(sportRaw) ? (sportRaw as ApexSportFilter) : 'ALL';
     const date = String(req.body?.date || '');
     const legCount = Math.max(2, Math.min(4, Number(req.body?.legCount || 2)));
-    const maxGames = Math.max(legCount, Math.min(12, Number(req.body?.maxGames || 10)));
+    const maxGames = Math.max(legCount, Math.min(36, Number(req.body?.maxGames || 24)));
     if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) {
       return res.status(400).json({ status: 'ERROR', message: 'date must be YYYY-MM-DD', tickets: [] });
     }

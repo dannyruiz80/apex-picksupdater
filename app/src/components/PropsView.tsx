@@ -39,7 +39,7 @@ import {
   Scale,
   Target,
 } from 'lucide-react';
-import { formatPropSelectionLabel, humanizePropMarket } from '../propPresentation';
+import { canonicalQualifiedPropQuotes, formatPropSelectionLabel, humanizePropMarket } from '../propPresentation';
 
 interface PropsViewProps {
   games: NormalizedApexGame[];
@@ -392,18 +392,7 @@ export const PropsView: React.FC<PropsViewProps> = ({
     });
   }, [propsData, selectedCategory, selectedBookmaker, selectedRecommendationFilter, searchQuery, sortBy]);
 
-  const qualifiedRankedProps = useMemo(() => {
-    return propsData
-      .filter((p) => p.valueAnalysis?.bestRecommendation?.recommendationStatus === 'QUALIFIES')
-      .sort((a, b) => {
-        const aa = a.valueAnalysis?.bestRecommendation?.selectedAnalysis;
-        const bb = b.valueAnalysis?.bestRecommendation?.selectedAnalysis;
-        const ap = aa?.apexProbability ?? -1;
-        const bp = bb?.apexProbability ?? -1;
-        if (ap !== bp) return bp - ap;
-        return (bb?.expectedValuePercent ?? -999) - (aa?.expectedValuePercent ?? -999);
-      });
-  }, [propsData]);
+  const qualifiedRankedProps = useMemo(() => canonicalQualifiedPropQuotes(propsData), [propsData]);
 
   const topQualifiedProp = qualifiedRankedProps[0] || null;
 
@@ -874,7 +863,7 @@ export const PropsView: React.FC<PropsViewProps> = ({
                 }`}
               >
                 <CheckCircle2 className="w-3 h-3" />
-                Qualifies Only ({propsData.filter((p) => p.valueAnalysis?.bestRecommendation?.recommendationStatus === 'QUALIFIES').length})
+                Qualifies Only ({qualifiedRankedProps.length})
               </button>
               <button
                 onClick={() => setSelectedRecommendationFilter('NO_BET_ONLY')}
@@ -1529,15 +1518,18 @@ export const PropsView: React.FC<PropsViewProps> = ({
                                     </div>
                                     <div>
                                       &bull; Sportsbook No-Vig Over Anchor:{' '}
-                                      {(quote.probabilityAnalysis.components.marketNoVigOverProbability * 100).toFixed(1)}% &times;{' '}
-                                      {(quote.probabilityAnalysis.components.marketWeight * 100).toFixed(0)}% wt
+                                      {quote.probabilityAnalysis.components.marketNoVigOverProbability !== null
+                                        ? `${(quote.probabilityAnalysis.components.marketNoVigOverProbability * 100).toFixed(1)}% × ${(quote.probabilityAnalysis.components.marketWeight * 100).toFixed(0)}% wt`
+                                        : 'N/A — single-sided quote excluded from model blend'}
                                     </div>
                                   </div>
                                 </div>
 
                                 {/* Step 5: Clamping & Final Bounds */}
                                 <div className="flex justify-between text-[10px] text-slate-400 pt-1">
-                                  <span>Bounds Clamp [12.0%, 88.0%]:</span>
+                                  <span>
+                                    Bounds Clamp [{(quote.probabilityAnalysis.components.clampedMinBound * 100).toFixed(2)}%, {(quote.probabilityAnalysis.components.clampedMaxBound * 100).toFixed(2)}%]:
+                                  </span>
                                   <span className="text-slate-200 font-mono">
                                     {quote.probabilityAnalysis.components.boundsApplied ? 'CLAMPED' : 'Within Bounds (Pass)'}
                                   </span>
