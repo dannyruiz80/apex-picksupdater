@@ -23,6 +23,8 @@ const REVIEW_MARKET_DISAGREEMENT_PP = 8.0;
 const VERIFY_MARKET_DISAGREEMENT_PP = 12.0;
 const REVIEW_EV_PERCENT = 10.0;
 const VERIFY_EV_PERCENT = 20.0;
+const MAX_MARKET_CONSENSUS_DISPERSION_PP = 8.0;
+const ALIGNMENT_COMPLEMENT_TOLERANCE = 0.005;
 
 export interface TennisHistoryMatch {
   eventId: string;
@@ -78,10 +80,25 @@ interface CachedProjection {
   projection: TennisMatchWinnerProjection;
 }
 
+export interface TennisModelMarketAlignmentAudit {
+  status: 'PASS' | 'FAIL';
+  reasons: string[];
+  recognizedBookPairs: number;
+  moneylineBookCount: number;
+  ambiguousBookCount: number;
+  modelProbabilitySum: number | null;
+  marketConsensusAway: number | null;
+  marketConsensusHome: number | null;
+  marketConsensusSum: number | null;
+  marketDispersionPP: number | null;
+  eventDisagreementPP: number | null;
+}
+
 export interface TennisMoneylineEvaluation {
   picks: DecisionBoardPick[];
   rejectionReasons: Record<string, number>;
   candidateCount: number;
+  alignmentAudit: TennisModelMarketAlignmentAudit;
 }
 
 const rawHistoryCache = new Map<string, CachedRawHistory>();
@@ -295,7 +312,7 @@ async function fetchHistoryDay(date: string, tour: TennisTour): Promise<TennisHi
   try {
     const res = await fetch(`${base}?dates=${ymd(date)}`, {
       signal: controller.signal,
-      headers: { 'User-Agent': 'ApexPicks/1.14.6 TennisMatchWinner', Accept: 'application/json' },
+      headers: { 'User-Agent': 'ApexPicks/1.14.7 TennisMatchWinner', Accept: 'application/json' },
     });
     if (!res.ok) throw new Error(`ESPN tennis history HTTP ${res.status}`);
     const raw = await res.json();
@@ -484,7 +501,7 @@ export function buildTennisProjectionFromHistory(
       'Recent results are recency weighted and small samples are symmetrically shrunk toward 50%.',
       'Verified same-surface history contributes only when at least four prior matches exist for that player.',
       'Sportsbook prices are excluded from the raw tennis probability and enter only after forecasting for edge/EV evaluation.',
-      'Tennis spreads, totals, doubles and player props remain fail-closed in v1.14.6.',
+      'Tennis spreads, totals, doubles and player props remain fail-closed in v1.14.7.',
     ],
   };
 }
@@ -508,40 +525,193 @@ interface TennisPricedOutcome {
   noVigProbability: number | null;
 }
 
-function freshMoneylineOutcomes(game: NormalizedApexGame, bookmakers: NormalizedBookmakerMarkets[]): TennisPricedOutcome[] {
+interface FreshTennisMoneylineResult {
+  outcomes: TennisPricedOutcome[];
+  recognizedBookPairs: number;
+  moneylineBookCount: number;
+  ambiguousBookCount: number;
+  awayNoVigProbabilities: number[];
+  homeNoVigProbabilities: number[];
+}
+
+function emptyAlignmentAudit(reason: string): TennisModelMarketAlignmentAudit {
+  return {
+    status: 'FAIL',
+    reasons: [reason],
+    recognizedBookPairs: 0,
+    moneylineBookCount: 0,
+    ambiguousBookCount: 0,
+    modelProbabilitySum: null,
+    marketConsensusAway: null,
+    marketConsensusHome: null,
+    marketConsensusSum: null,
+    marketDispersionPP: null,
+    eventDisagreementPP: null,
+  };
+}
+
+function freshMoneylineOutcomes(game: NormalizedApexGame, bookmakers: NormalizedBookmakerMarkets[]): FreshTennisMoneylineResult {
   const out: TennisPricedOutcome[] = [];
+  const awayNoVigProbabilities: number[] = [];
+  const homeNoVigProbabilities: number[] = [];
+  let recognizedBookPairs = 0;
+  let moneylineBookCount = 0;
+  let ambiguousBookCount = 0;
+
   for (const book of bookmakers) {
     const moneyline = book.markets.find((m) => m.marketType === 'MONEYLINE');
     if (!moneyline) continue;
+    moneylineBookCount++;
+
+    const timestamp = moneyline.lastUpdate || book.lastUpdate;
+    const quoteMs = Date.parse(timestamp);
+    const age = Date.now() - quoteMs;
+    if (!Number.isFinite(quoteMs) || !Number.isFinite(age) || age > MAX_QUOTE_AGE_MS) continue;
+
     const recognized = moneyline.outcomes
       .map((o) => ({ o, side: participantSide(game, o.name) }))
       .filter((x): x is { o: typeof moneyline.outcomes[number]; side: 'AWAY' | 'HOME' } => x.side !== null);
-    if (recognized.length < 2) continue;
+    const awayRows = recognized.filter((x) => x.side === 'AWAY');
+    const homeRows = recognized.filter((x) => x.side === 'HOME');
 
-    const a = recognized.find((x) => x.side === 'AWAY');
-    const b = recognized.find((x) => x.side === 'HOME');
-    if (!a || !b) continue;
+    // A production tennis H2H quote must resolve to exactly one participant on each side.
+    // Extra/duplicate/ambiguous outcomes are ignored for this book rather than guessed.
+    if (moneyline.outcomes.length !== 2 || recognized.length !== 2 || awayRows.length !== 1 || homeRows.length !== 1) {
+      ambiguousBookCount++;
+      continue;
+    }
+
+    const a = awayRows[0];
+    const b = homeRows[0];
+    if (!Number.isFinite(a.o.americanOdds) || !Number.isFinite(b.o.americanOdds) || a.o.americanOdds === 0 || b.o.americanOdds === 0) {
+      ambiguousBookCount++;
+      continue;
+    }
+
     const ia = americanImplied(a.o.americanOdds);
     const ib = americanImplied(b.o.americanOdds);
     const denom = ia + ib;
-    const noVigA = denom > 0 ? ia / denom : null;
-    const noVigB = denom > 0 ? ib / denom : null;
-
-    for (const row of [a, b]) {
-      const timestamp = moneyline.lastUpdate || book.lastUpdate;
-      const age = Date.now() - Date.parse(timestamp);
-      if (!Number.isFinite(age) || age > MAX_QUOTE_AGE_MS) continue;
-      out.push({
-        side: row.side,
-        name: row.o.name,
-        sportsbook: book.title,
-        oddsAmerican: row.o.americanOdds,
-        timestamp,
-        noVigProbability: row.side === 'AWAY' ? noVigA : noVigB,
-      });
+    if (!Number.isFinite(denom) || denom <= 0) {
+      ambiguousBookCount++;
+      continue;
     }
+    const noVigA = ia / denom;
+    const noVigB = ib / denom;
+    if (!Number.isFinite(noVigA) || !Number.isFinite(noVigB)) {
+      ambiguousBookCount++;
+      continue;
+    }
+
+    recognizedBookPairs++;
+    awayNoVigProbabilities.push(noVigA);
+    homeNoVigProbabilities.push(noVigB);
+    out.push({
+      side: 'AWAY',
+      name: a.o.name,
+      sportsbook: book.title,
+      oddsAmerican: a.o.americanOdds,
+      timestamp,
+      noVigProbability: noVigA,
+    });
+    out.push({
+      side: 'HOME',
+      name: b.o.name,
+      sportsbook: book.title,
+      oddsAmerican: b.o.americanOdds,
+      timestamp,
+      noVigProbability: noVigB,
+    });
   }
-  return out;
+
+  return {
+    outcomes: out,
+    recognizedBookPairs,
+    moneylineBookCount,
+    ambiguousBookCount,
+    awayNoVigProbabilities,
+    homeNoVigProbabilities,
+  };
+}
+
+function marketRangePP(values: number[]): number | null {
+  if (values.length < 2) return null;
+  return (Math.max(...values) - Math.min(...values)) * 100;
+}
+
+function buildAlignmentAudit(
+  game: NormalizedApexGame,
+  projection: TennisMatchWinnerProjection,
+  fresh: FreshTennisMoneylineResult,
+): TennisModelMarketAlignmentAudit {
+  const reasons: string[] = [];
+  const pA = projection.playerAProbability;
+  const pB = projection.playerBProbability;
+  const modelProbabilitySum = pA !== null && pB !== null ? pA + pB : null;
+
+  const aOwn = Math.max(tennisNameMatchConfidence(game.playerAName, game.awayTeam), tennisNameMatchConfidence(game.awayTeam, game.playerAName));
+  const aCross = Math.max(tennisNameMatchConfidence(game.playerAName, game.homeTeam), tennisNameMatchConfidence(game.awayTeam, game.playerBName));
+  const bOwn = Math.max(tennisNameMatchConfidence(game.playerBName, game.homeTeam), tennisNameMatchConfidence(game.homeTeam, game.playerBName));
+  const bCross = Math.max(tennisNameMatchConfidence(game.playerBName, game.awayTeam), tennisNameMatchConfidence(game.homeTeam, game.playerAName));
+  if (aOwn < 0.88 || bOwn < 0.88 || aOwn - aCross < 0.06 || bOwn - bCross < 0.06) {
+    reasons.push('TENNIS_MODEL_SIDE_IDENTITY_UNVERIFIED');
+  }
+
+  if (
+    pA === null || pB === null ||
+    !Number.isFinite(pA) || !Number.isFinite(pB) ||
+    pA <= 0 || pA >= 1 || pB <= 0 || pB >= 1 ||
+    modelProbabilitySum === null || Math.abs(modelProbabilitySum - 1) > ALIGNMENT_COMPLEMENT_TOLERANCE
+  ) {
+    reasons.push('TENNIS_MODEL_COMPLEMENT_INVALID');
+  }
+
+  if (fresh.moneylineBookCount > 0 && fresh.recognizedBookPairs === 0) {
+    reasons.push('TENNIS_MARKET_SIDE_IDENTITY_UNRESOLVED');
+  }
+
+  const marketConsensusAway = mean(fresh.awayNoVigProbabilities);
+  const marketConsensusHome = mean(fresh.homeNoVigProbabilities);
+  const marketConsensusSum = marketConsensusAway !== null && marketConsensusHome !== null
+    ? marketConsensusAway + marketConsensusHome
+    : null;
+  if (
+    marketConsensusSum !== null &&
+    (!Number.isFinite(marketConsensusSum) || Math.abs(marketConsensusSum - 1) > ALIGNMENT_COMPLEMENT_TOLERANCE)
+  ) {
+    reasons.push('TENNIS_MARKET_COMPLEMENT_INVALID');
+  }
+
+  const marketDispersionPP = marketRangePP(fresh.awayNoVigProbabilities);
+  if (marketDispersionPP !== null && marketDispersionPP > MAX_MARKET_CONSENSUS_DISPERSION_PP) {
+    reasons.push('TENNIS_MARKET_CONSENSUS_DISPERSED');
+  }
+
+  const eventDisagreementPP =
+    pA !== null && marketConsensusAway !== null && Number.isFinite(pA) && Number.isFinite(marketConsensusAway)
+      ? Math.abs(pA - marketConsensusAway) * 100
+      : null;
+
+  return {
+    status: reasons.length ? 'FAIL' : 'PASS',
+    reasons,
+    recognizedBookPairs: fresh.recognizedBookPairs,
+    moneylineBookCount: fresh.moneylineBookCount,
+    ambiguousBookCount: fresh.ambiguousBookCount,
+    modelProbabilitySum,
+    marketConsensusAway,
+    marketConsensusHome,
+    marketConsensusSum,
+    marketDispersionPP,
+    eventDisagreementPP,
+  };
+}
+
+export function auditTennisModelMarketAlignment(
+  game: NormalizedApexGame,
+  markets: NormalizedApexEventMarkets,
+  projection: TennisMatchWinnerProjection,
+): TennisModelMarketAlignmentAudit {
+  return buildAlignmentAudit(game, projection, freshMoneylineOutcomes(game, markets.bookmakers));
 }
 
 function mean(values: number[]): number | null {
@@ -562,21 +732,41 @@ export function evaluateTennisMoneylineMarkets(
   const rejectionReasons: Record<string, number> = {};
   if (projection.status !== 'AVAILABLE' || projection.playerAProbability === null || projection.playerBProbability === null) {
     addReason(rejectionReasons, `TENNIS_MODEL_${projection.status}`);
-    return { picks: [], rejectionReasons, candidateCount: 0 };
+    return { picks: [], rejectionReasons, candidateCount: 0, alignmentAudit: emptyAlignmentAudit(`TENNIS_MODEL_${projection.status}`) };
   }
 
-  const outcomes = freshMoneylineOutcomes(game, markets.bookmakers);
-  const picks: DecisionBoardPick[] = [];
-  let candidateCount = 0;
+  const fresh = freshMoneylineOutcomes(game, markets.bookmakers);
+  const outcomes = fresh.outcomes;
+  const awayGroup = outcomes.filter((o) => o.side === 'AWAY');
+  const homeGroup = outcomes.filter((o) => o.side === 'HOME');
+  const candidateCount = (awayGroup.length ? 1 : 0) + (homeGroup.length ? 1 : 0);
+  const alignmentAudit = buildAlignmentAudit(game, projection, fresh);
 
+  // Structural identity/complement/market-dispersion failures are event-level and fail closed once.
+  // This keeps coverage counts interpretable instead of double-counting the same match for both sides.
+  for (const reason of alignmentAudit.reasons) addReason(rejectionReasons, reason);
+  if (alignmentAudit.status === 'FAIL') {
+    if (!candidateCount) addReason(rejectionReasons, 'TENNIS_MATCH_WINNER_MARKET_UNAVAILABLE');
+    return { picks: [], rejectionReasons, candidateCount, alignmentAudit };
+  }
+
+  const eventIntegrityReasons: string[] = [];
+  if (alignmentAudit.eventDisagreementPP !== null && alignmentAudit.eventDisagreementPP >= VERIFY_MARKET_DISAGREEMENT_PP) {
+    eventIntegrityReasons.push('MODEL_MARKET_DISAGREEMENT_EXTREME');
+  } else if (alignmentAudit.eventDisagreementPP !== null && alignmentAudit.eventDisagreementPP >= REVIEW_MARKET_DISAGREEMENT_PP) {
+    eventIntegrityReasons.push('MODEL_MARKET_DISAGREEMENT_HEIGHTENED');
+  }
+  // Model-vs-market disagreement is symmetric for a valid two-way match, so count it once per event.
+  for (const reason of eventIntegrityReasons) addReason(rejectionReasons, reason);
+
+  const picks: DecisionBoardPick[] = [];
   for (const side of ['AWAY', 'HOME'] as const) {
-    const group = outcomes.filter((o) => o.side === side);
+    const group = side === 'AWAY' ? awayGroup : homeGroup;
     if (!group.length) continue;
-    candidateCount++;
     const sorted = [...group].sort((a, b) => b.oddsAmerican - a.oddsAmerican);
     const best = sorted[0];
     const depth = new Set(group.map((g) => g.sportsbook)).size;
-    const consensus = mean(group.map((g) => g.noVigProbability).filter((x): x is number => x !== null));
+    const consensus = side === 'AWAY' ? alignmentAudit.marketConsensusAway : alignmentAudit.marketConsensusHome;
     const rawProbability = side === 'AWAY' ? projection.playerAProbability : projection.playerBProbability;
     const breakEven = americanImplied(best.oddsAmerican);
     const reference = clamp(consensus ?? breakEven);
@@ -585,7 +775,7 @@ export function evaluateTennisMoneylineMarkets(
     const edge = guarded - breakEven;
     const evPercent = expectedValuePercent(guarded, best.oddsAmerican);
     const rawEvPercent = expectedValuePercent(rawProbability, best.oddsAmerican);
-    const disagreement = consensus === null ? null : Math.abs(rawProbability - consensus) * 100;
+    const disagreement = alignmentAudit.eventDisagreementPP;
 
     const blockers: string[] = [];
     if (projection.reliabilityTier === 'VERY_LIMITED' || projection.reliabilityTier === 'LIMITED') blockers.push('RELIABILITY_BELOW_MODERATE');
@@ -595,28 +785,24 @@ export function evaluateTennisMoneylineMarkets(
     if (evPercent <= 0) blockers.push('NON_POSITIVE_EV');
     if (!projection.pointInTimeValid || game.status !== 'UPCOMING' || Date.parse(game.startTime) <= Date.now()) blockers.push('POINT_IN_TIME_OR_PREGAME_INVALID');
 
-    const integrityReasons: string[] = [];
+    const sideIntegrityReasons: string[] = [];
     let integrityStatus: 'QUALIFIED' | 'REVIEW' | 'VERIFY' | 'PASS' = blockers.length ? 'PASS' : 'QUALIFIED';
-    if (disagreement !== null && disagreement >= VERIFY_MARKET_DISAGREEMENT_PP) {
-      integrityStatus = 'VERIFY';
-      integrityReasons.push('MODEL_MARKET_DISAGREEMENT_EXTREME');
-    } else if (disagreement !== null && disagreement >= REVIEW_MARKET_DISAGREEMENT_PP) {
-      integrityStatus = 'REVIEW';
-      integrityReasons.push('MODEL_MARKET_DISAGREEMENT_HEIGHTENED');
-    }
+    if (eventIntegrityReasons.includes('MODEL_MARKET_DISAGREEMENT_EXTREME')) integrityStatus = 'VERIFY';
+    else if (eventIntegrityReasons.includes('MODEL_MARKET_DISAGREEMENT_HEIGHTENED')) integrityStatus = 'REVIEW';
+
     if (evPercent >= VERIFY_EV_PERCENT) {
       integrityStatus = 'VERIFY';
-      integrityReasons.push('GUARDED_EV_EXTREME_VERIFY_REQUIRED');
+      sideIntegrityReasons.push('GUARDED_EV_EXTREME_VERIFY_REQUIRED');
     } else if (evPercent >= REVIEW_EV_PERCENT && integrityStatus !== 'VERIFY') {
       integrityStatus = 'REVIEW';
-      integrityReasons.push('GUARDED_EV_HEIGHTENED_REVIEW');
+      sideIntegrityReasons.push('GUARDED_EV_HEIGHTENED_REVIEW');
     }
 
-    const allReasons = [...blockers, ...integrityReasons];
-    if (allReasons.length) {
-      allReasons.forEach((reason) => addReason(rejectionReasons, reason));
-      continue;
-    }
+    // Side-specific threshold/EV reasons remain side-level. Symmetric disagreement reasons were
+    // already recorded once above, but they still block both sides from becoming a recommendation.
+    blockers.forEach((reason) => addReason(rejectionReasons, reason));
+    sideIntegrityReasons.forEach((reason) => addReason(rejectionReasons, reason));
+    if (blockers.length || sideIntegrityReasons.length || eventIntegrityReasons.length) continue;
 
     const selectedPlayer = side === 'AWAY' ? game.playerAName! : game.playerBName!;
     picks.push({
@@ -659,8 +845,10 @@ export function evaluateTennisMoneylineMarkets(
         `Guarded edge +${(edge * 100).toFixed(1)} pp with +${evPercent.toFixed(1)}% expected value across ${depth} fresh books.`,
         `${projection.reliabilityTier} historical reliability: ${projection.playerAHistory.sampleCount} ${game.playerAName} matches / ${projection.playerBHistory.sampleCount} ${game.playerBName} matches.`,
         `Early-evidence risk shrinkage uses ${(weight * 100).toFixed(0)}% model weight; sportsbook consensus is a decision guardrail only and never an input to the raw probability.`,
+        `Alignment audit PASS: model complement ${(alignmentAudit.modelProbabilitySum ?? 0).toFixed(3)}, market complement ${(alignmentAudit.marketConsensusSum ?? 0).toFixed(3)}, ${alignmentAudit.recognizedBookPairs} verified two-way book pairs.`,
+        alignmentAudit.marketDispersionPP === null ? 'Cross-book no-vig dispersion unavailable with fewer than two verified book pairs.' : `Cross-book no-vig dispersion ${alignmentAudit.marketDispersionPP.toFixed(1)} pp.`,
         projection.targetSurface ? `Verified target surface: ${projection.targetSurface}.` : 'Surface was not verified for this match, so no surface adjustment was used.',
-        'Tennis spreads, totals, doubles and player props remain fail-closed in v1.14.6.',
+        'Tennis spreads, totals, doubles and player props remain fail-closed in v1.14.7.',
       ],
       source: 'GAME_MODEL_EVALUATION',
       rawModelProbability: rawProbability,
@@ -670,7 +858,7 @@ export function evaluateTennisMoneylineMarkets(
       modelMarketDisagreementPP: disagreement,
       rawExpectedValuePercent: rawEvPercent,
       gameIntegrityStatus: integrityStatus,
-      gameIntegrityReasons: integrityReasons,
+      gameIntegrityReasons: [...eventIntegrityReasons, ...sideIntegrityReasons],
       gameEvTier: evPercent >= VERIFY_EV_PERCENT ? 'EXTREME' : evPercent >= REVIEW_EV_PERCENT ? 'HEIGHTENED' : 'NORMAL',
       crossMarketConsistent: true,
       modelEvidenceObservations: Math.min(projection.playerAHistory.sampleCount, projection.playerBHistory.sampleCount),
@@ -683,7 +871,7 @@ export function evaluateTennisMoneylineMarkets(
   }
 
   if (!candidateCount) addReason(rejectionReasons, 'TENNIS_MATCH_WINNER_MARKET_UNAVAILABLE');
-  return { picks, rejectionReasons, candidateCount };
+  return { picks, rejectionReasons, candidateCount, alignmentAudit };
 }
 
 export class TennisMatchWinnerModelService {

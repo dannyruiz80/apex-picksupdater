@@ -446,7 +446,10 @@ export type ReasonCode =
   | 'PROVENANCE_INCOMPLETE'
   | 'STALE_PRICE'
   | 'EVENT_NOT_PREGAME'
-  | 'POINT_IN_TIME_INVALID';
+  | 'POINT_IN_TIME_INVALID'
+  | 'BETTER_PRICE_AVAILABLE'
+  | 'SINGLE_SIDED_MARKET'
+  | 'MODEL_BOUND_DRIVEN';
 
 export interface RecommendationThresholds {
   minReliabilityTier: SampleReliabilityTier; // Default: 'MODERATE'
@@ -626,7 +629,7 @@ export interface ProbabilityComponentBreakdown {
   l5Weight: number;
 
   historicalOverProbability: number;
-  marketNoVigOverProbability: number;
+  marketNoVigOverProbability: number | null;
 
   sampleReliabilityTier: SampleReliabilityTier;
   sampleReliabilityFactor: number;

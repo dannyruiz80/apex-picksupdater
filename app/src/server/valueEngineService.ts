@@ -60,6 +60,9 @@ export class ValueEngineService {
       STALE_PRICE: 0,
       EVENT_NOT_PREGAME: 0,
       POINT_IN_TIME_INVALID: 0,
+      BETTER_PRICE_AVAILABLE: 0,
+      SINGLE_SIDED_MARKET: 0,
+      MODEL_BOUND_DRIVEN: 0,
     },
     bySport: {
       MLB: { evaluations: 0, qualifies: 0, noBet: 0 },
@@ -242,8 +245,35 @@ export class ValueEngineService {
       },
     });
 
-    const reasonCodes = gate.reasonCodes;
-    const recommendationStatus: RecommendationStatus = gate.qualifies ? 'QUALIFIES' : 'NO_BET';
+    // Additional production-integrity guards for provider-first props.
+    // 1) Over/under count markets must be two-sided to derive a defensible executable
+    //    market comparison. Naturally one-sided yes/no markets are exempt.
+    // 2) A recommendation may never qualify only because the baseline model's generic
+    //    probability clamp artificially raised the selected low-probability side.
+    const naturallySingleSidedMarkets = new Set(['player_anytime_td', 'player_goal_scorer_anytime']);
+    const marketIsSingleSided = quote.probabilityAnalysis?.marketImplied?.isSingleSided === true;
+    const singleSidedBlocked = marketIsSingleSided && !naturallySingleSidedMarkets.has(quote.providerMarketKey);
+
+    const components = quote.probabilityAnalysis?.components ?? null;
+    const rawOver = components?.rawBlendedOverProbability ?? null;
+    const minBound = components?.clampedMinBound ?? null;
+    const maxBound = components?.clampedMaxBound ?? null;
+    const boundDriven = Boolean(
+      components?.boundsApplied &&
+      rawOver !== null && minBound !== null && maxBound !== null &&
+      ((side === 'OVER' && rawOver < minBound) || (side === 'UNDER' && rawOver > maxBound))
+    );
+
+    // Provider-first execution integrity: a production recommendation is attached only
+    // to the best available price for the exact player/market/line/side. A worse quote
+    // may still have positive EV, but it is not a separate Apex recommendation.
+    const qualifiesWithExecutionIntegrity =
+      gate.qualifies && isBestAvailablePrice && !singleSidedBlocked && !boundDriven;
+    const recommendationStatus: RecommendationStatus = qualifiesWithExecutionIntegrity ? 'QUALIFIES' : 'NO_BET';
+    const reasonCodes: ReasonCode[] = [...gate.reasonCodes];
+    if (gate.qualifies && !isBestAvailablePrice) reasonCodes.push('BETTER_PRICE_AVAILABLE');
+    if (singleSidedBlocked) reasonCodes.push('SINGLE_SIDED_MARKET');
+    if (boundDriven) reasonCodes.push('MODEL_BOUND_DRIVEN');
     const gateMath = {
       minReliabilityMet: gate.checks.minReliabilityMet,
       minEdgeMet: gate.checks.minEdgeMet,
@@ -742,6 +772,34 @@ export class ValueEngineService {
       details: `FD (-148) vs DK (-140) -> Best Over: ${shoppingEval.lineShopping.bestOverQuote?.sportsbook} (${shoppingEval.lineShopping.bestOverQuote?.oddsAmerican})`,
     });
 
+    // Test 9B: a worse sportsbook quote is not emitted as a second production recommendation.
+    const highProbFdQuote: NormalizedPlayerPropQuote = {
+      ...mockLowderQuote,
+      quoteId: 'verify_execution_fd',
+      probabilityAnalysis: {
+        ...mockLowderQuote.probabilityAnalysis!,
+        apexOverProbability: 0.72,
+        apexUnderProbability: 0.28,
+      },
+    };
+    const highProbDkQuote: NormalizedPlayerPropQuote = {
+      ...dkQuote,
+      quoteId: 'verify_execution_dk',
+      probabilityAnalysis: highProbFdQuote.probabilityAnalysis,
+    };
+    const worseExecutionEval = this.evaluatePropValue(highProbFdQuote, [highProbFdQuote, highProbDkQuote]);
+    const bestExecutionEval = this.evaluatePropValue(highProbDkQuote, [highProbFdQuote, highProbDkQuote]);
+    const test9bPassed =
+      worseExecutionEval.overAnalysis?.recommendationStatus === 'NO_BET' &&
+      worseExecutionEval.overAnalysis?.reasonCodes.includes('BETTER_PRICE_AVAILABLE') === true &&
+      bestExecutionEval.overAnalysis?.recommendationStatus === 'QUALIFIES' &&
+      bestExecutionEval.overAnalysis?.isBestAvailablePrice === true;
+    criticalTests.push({
+      testName: 'PROVIDER_FIRST_BEST_EXECUTION_ONLY',
+      status: test9bPassed ? 'PASS' : 'FAIL',
+      details: `Worse=${worseExecutionEval.overAnalysis?.recommendationStatus}/${worseExecutionEval.overAnalysis?.reasonCodes.join(',')}; best=${bestExecutionEval.overAnalysis?.recommendationStatus} ${bestExecutionEval.overAnalysis?.bestSportsbook} ${bestExecutionEval.overAnalysis?.bestOddsAmerican}`,
+    });
+
     // Test 10: Multi-Bookmaker Differing Lines Evaluated Independently
     const diffLineQuote: NormalizedPlayerPropQuote = {
       ...mockLowderQuote,
@@ -837,16 +895,67 @@ export class ValueEngineService {
       details: `Reliability=LIMITED (Minimum: MODERATE) -> Status: ${test15Eval.bestRecommendation.recommendationStatus}, Reasons: ${test15Eval.bestRecommendation.reasonCodes.join(',')}`,
     });
 
-    // Test 16: Deterministic Reproducibility
+    // Test 16: Rare-event longshot props cannot auto-qualify from a single-sided
+    // market or because the generic model floor inflated the selected side.
+    const suspiciousLongshotQuote: NormalizedPlayerPropQuote = {
+      ...mockLowderQuote,
+      quoteId: 'verify_rare_hr_longshot',
+      providerMarketKey: 'batter_home_runs',
+      marketCategory: 'HOME_RUNS',
+      line: 1.5,
+      overOddsAmerican: +42500,
+      overOddsDecimal: 426.0,
+      underOddsAmerican: null,
+      underOddsDecimal: null,
+      probabilityAnalysis: {
+        ...mockLowderQuote.probabilityAnalysis!,
+        targetLine: 1.5,
+        apexOverProbability: 0.12,
+        apexUnderProbability: 0.88,
+        marketImplied: {
+          sportsbook: 'BetRivers',
+          overOddsAmerican: +42500,
+          underOddsAmerican: null,
+          overOddsDecimal: 426.0,
+          underOddsDecimal: null,
+          rawOverImplied: 0.0023,
+          rawUnderImplied: null,
+          bookmakerVig: null,
+          noVigOverProbability: 0.0023,
+          noVigUnderProbability: null,
+          isSingleSided: true,
+        },
+        components: {
+          ...mockLowderQuote.probabilityAnalysis!.components!,
+          rawBlendedOverProbability: 0.004,
+          boundsApplied: true,
+          clampedMinBound: 0.12,
+          clampedMaxBound: 0.88,
+          sampleReliabilityTier: 'STRONG',
+        },
+      },
+    };
+    const suspiciousLongshotEval = this.evaluatePropValue(suspiciousLongshotQuote);
+    const test16Passed =
+      suspiciousLongshotEval.overAnalysis?.recommendationStatus === 'NO_BET' &&
+      suspiciousLongshotEval.overAnalysis.reasonCodes.includes('SINGLE_SIDED_MARKET') &&
+      suspiciousLongshotEval.overAnalysis.reasonCodes.includes('MODEL_BOUND_DRIVEN');
+    criticalTests.push({
+      testName: 'RARE_EVENT_LONGSHOT_FAILS_EXECUTION_INTEGRITY',
+      status: test16Passed ? 'PASS' : 'FAIL',
+      details: `Status=${suspiciousLongshotEval.overAnalysis?.recommendationStatus}; reasons=${suspiciousLongshotEval.overAnalysis?.reasonCodes.join(',')}`,
+    });
+
+    // Test 17: Deterministic Reproducibility
     const run1 = this.evaluatePropValue(mockLowderQuote);
     const run2 = this.evaluatePropValue(mockLowderQuote);
-    const test16Passed =
+    const test17Passed =
       run1.overAnalysis?.expectedValue === run2.overAnalysis?.expectedValue &&
       run1.underAnalysis?.expectedValue === run2.underAnalysis?.expectedValue &&
       run1.bestRecommendation.recommendationStatus === run2.bestRecommendation.recommendationStatus;
     criticalTests.push({
       testName: 'DETERMINISTIC_REPRODUCIBILITY',
-      status: test16Passed ? 'PASS' : 'FAIL',
+      status: test17Passed ? 'PASS' : 'FAIL',
       details: `Run 1 == Run 2 (Over EV: ${run1.overAnalysis?.expectedValue}, Under EV: ${run1.underAnalysis?.expectedValue})`,
     });
 
