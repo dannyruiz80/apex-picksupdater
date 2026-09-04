@@ -1270,6 +1270,34 @@ export interface EventPlayerPropsResponse {
   quotaState: MarketQuotaState;
 }
 
+
+export interface PropSlateEventResult {
+  apexEventId: string;
+  sport: ApexSport;
+  eventTitle: string;
+  scheduledDate?: string | null;
+  status: EventPlayerPropsResponse['status'];
+  propsCount: number;
+  qualifiedCount: number;
+  message?: string;
+}
+
+export interface PropSlateScanResponse {
+  status: 'SUCCESS' | 'NO_PROPS' | 'NOT_CONFIGURED' | 'QUOTA_EXCEEDED' | 'ERROR';
+  selectedDate: string;
+  sportFilter: ApexSportFilter;
+  eventsAvailable: number;
+  propCapableEvents: number;
+  eventsScanned: number;
+  propsCount: number;
+  qualifiedCount: number;
+  props: NormalizedPlayerPropQuote[];
+  eventResults: PropSlateEventResult[];
+  unsupportedSports: ApexSport[];
+  message?: string;
+  quotaState: MarketQuotaState;
+}
+
 export interface PropNegativeTestResponse {
   testName: string;
   status: 'PASS' | 'FAIL';
@@ -1673,6 +1701,18 @@ export type DecisionBoardStatus =
   | 'QUOTA_BLOCKED'
   | 'ERROR';
 
+export interface DecisionBoardSportCoverage {
+  sport: ApexSport;
+  scheduleEvents: number;
+  scannedEvents: number;
+  eventsWithModelData: number;
+  qualifiedPicks: number;
+  productionConnection: 'CONNECTED' | 'PARTIAL' | 'NOT_CONNECTED';
+  rejectionReasons: Record<string, number>;
+  lastStatus: DecisionBoardStatus | null;
+  lastMessage: string | null;
+}
+
 export interface DecisionBoardPick {
   rank: number;
   eventId: string;
@@ -1725,6 +1765,188 @@ export interface DecisionBoardPick {
   modelEvidenceObservations?: number | null;
   v2ContributionPP?: number | null;
   v2ContributionStatus?: 'MATERIAL' | 'NO_MATERIAL_ADJUSTMENT' | 'UNAVAILABLE' | null;
+
+  // Exact-line sportsbook offers captured in the same fresh provider evaluation.
+  // Used by the parlay engine to require one executable book for every leg.
+  bookOffers?: DecisionBookOffer[];
+
+  // Prospective game-market calibration learning. Raw model probability is never
+  // mutated; this adjustment is applied only to the guarded decision probability.
+  calibrationAdjustedProbability?: number | null;
+  prospectiveCalibrationAdjustmentPP?: number | null;
+  gameCalibrationEvidenceTier?: GameCalibrationEvidenceTier | null;
+  gameCalibrationEce?: number | null;
+  gameCalibrationBrier?: number | null;
+}
+
+export interface DecisionBookOffer {
+  sportsbook: string;
+  oddsAmerican: number;
+  quoteTimestamp: string;
+}
+
+export type GameCalibrationEvidenceTier =
+  | 'EARLY'
+  | 'DEVELOPING'
+  | 'MODERATE'
+  | 'MATURE';
+
+export interface GameCalibrationProfile {
+  sport: ApexSport;
+  marketType: MarketType;
+  independentDecisiveObservations: number;
+  evidenceTier: GameCalibrationEvidenceTier;
+  meanPredictedProbability: number | null;
+  actualHitRate: number | null;
+  calibrationGap: number | null;
+  expectedCalibrationError: number | null;
+  brierScore: number | null;
+  logLoss: number | null;
+  recommendedModelWeight: number;
+  status: 'COLLECTING' | 'STABLE' | 'OVERCONFIDENT' | 'UNDERCONFIDENT' | 'UNSTABLE';
+}
+
+
+export type BankrollBetOutcome = 'WIN' | 'LOSS' | 'PUSH' | 'VOID';
+
+export interface BankrollSettings {
+  configured: boolean;
+  currentBankroll: number;
+  unitPercent: number;
+  dailyRiskCapPercent: number;
+  maxOpenExposurePercent: number;
+  maxStraightBetUnits: number;
+  maxParlayBetUnits: number;
+  updatedAt: string;
+}
+
+export interface BankrollBetEntry {
+  betId: string;
+  source: 'PARLAY' | 'STRAIGHT' | 'MANUAL';
+  label: string;
+  sportsbook: string;
+  oddsAmerican: number;
+  stakeUnits: number;
+  stakeDollars: number;
+  unitDollarValueAtPlacement: number;
+  bankrollAtPlacement: number;
+  potentialProfitDollars: number;
+  status: 'OPEN' | 'SETTLED';
+  outcome: BankrollBetOutcome | null;
+  netProfitDollars: number | null;
+  placedAt: string;
+  settledAt: string | null;
+  eventIds: string[];
+  details: string[];
+}
+
+export interface BankrollState {
+  version: string;
+  settings: BankrollSettings;
+  bets: BankrollBetEntry[];
+}
+
+export interface BankrollStakePreview {
+  configured: boolean;
+  status: 'READY' | 'REDUCED' | 'BLOCKED' | 'BANKROLL_NOT_CONFIGURED';
+  requestedUnits: number;
+  adjustedUnits: number;
+  unitDollarValue: number | null;
+  suggestedStakeDollars: number | null;
+  bankrollSnapshot: number | null;
+  availableDailyRiskDollars: number | null;
+  availableOpenExposureDollars: number | null;
+  cappedBy: string[];
+}
+
+export interface BankrollSummary {
+  version: string;
+  settings: BankrollSettings;
+  unitDollarValue: number | null;
+  openExposureDollars: number;
+  openExposureCapDollars: number | null;
+  todayRiskDollars: number;
+  dailyRiskCapDollars: number | null;
+  realizedProfitLossDollars: number;
+  openBetsCount: number;
+  totalTrackedBets: number;
+  bets: BankrollBetEntry[];
+}
+
+export type ParlayCorrelationRisk = 'LOW_UNMODELED' | 'BLOCKED_SAME_EVENT';
+
+export interface ParlayLeg {
+  eventId: string;
+  eventTitle: string;
+  sport: ApexSport;
+  league: string;
+  displayPick: string;
+  pickType: 'PLAYER_PROP' | 'GAME_MARKET';
+  marketCategory: string;
+  gameMarketType: MarketType | null;
+  playerName: string | null;
+  side: 'OVER' | 'UNDER' | 'HOME' | 'AWAY' | 'DRAW';
+  line: number | null;
+  sportsbook: string;
+  oddsAmerican: number;
+  probability: number;
+  breakEvenProbability: number;
+  expectedValuePercent: number;
+  reliabilityTier: SampleReliabilityTier;
+  modelVersion: string;
+  modelValidationStatus: 'EARLY_EVIDENCE' | 'PROSPECTIVE_VALIDATED' | null;
+}
+
+export interface ParlayTicket {
+  ticketId: string;
+  status: 'QUALIFIED' | 'REVIEW';
+  sportsbook: string;
+  legs: ParlayLeg[];
+  legCount: number;
+  combinedAmericanOdds: number;
+  combinedDecimalOdds: number;
+  independenceProbability: number;
+  combinedBreakEvenProbability: number;
+  independenceExpectedValuePercent: number;
+  correlationRisk: ParlayCorrelationRisk;
+  correlationNote: string;
+  suggestedStakeUnits: number;
+  bankrollStake: BankrollStakePreview;
+  stakeSizingMethod: 'QUARTER_KELLY_CAPPED';
+  reasons: string[];
+}
+
+export interface ParlayFunnelStats {
+  scheduleEventsConsidered: number;
+  cachedEventsSeeded: number;
+  liveEventsEvaluated: number;
+  distinctEligibleEvents: number;
+  representativeLegs: number;
+  possibleIndependentCombinations: number;
+  commonBookCombinations: number;
+  valueClearedCombinations: number;
+  fallbackAlternativeLegsUsed: boolean;
+}
+
+export interface ParlayScanResponse {
+  status: 'SUCCESS' | 'NO_QUALIFIED_PICKS' | 'NO_UPCOMING_EVENTS' | 'NOT_CONFIGURED' | 'QUOTA_BLOCKED' | 'ERROR';
+  message: string;
+  generatedAt: string;
+  sportFilter: ApexSportFilter;
+  scheduleDate: string;
+  scheduleDatesScanned: string[];
+  requestedLegCount: number;
+  gamesScanned: number;
+  eligibleLegCount: number;
+  qualifiedTicketCount: number;
+  tickets: ParlayTicket[];
+  reviewTickets: ParlayTicket[];
+  eligibleLegs: DecisionBoardPick[];
+  straightAlternatives: DecisionBoardPick[];
+  rejectedReasons: Record<string, number>;
+  funnel: ParlayFunnelStats;
+  cacheStatus: 'MISS' | 'SAVED_SEED' | 'HIT';
+  notes: string[];
 }
 
 
@@ -1740,6 +1962,8 @@ export interface DecisionBoardResponse {
   qualifiedCount: number;
   picks: DecisionBoardPick[];
   notes: string[];
+  coverageBySport?: DecisionBoardSportCoverage[];
+  scanMode?: 'NARROW' | 'BROAD_SINGLE_SPORT' | 'BROAD_MULTI_SPORT';
 }
 
 

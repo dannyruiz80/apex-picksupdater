@@ -16,8 +16,10 @@ import { PicksView } from './components/PicksView';
 import { WinProbabilityView } from './components/WinProbabilityView';
 import { LiveView } from './components/LiveView';
 import { PropsView } from './components/PropsView';
+import { ParlaysView } from './components/ParlaysView';
 import { AuditView } from './components/AuditView';
 import { SimsView } from './components/SimsView';
+import { MyBetsView } from './components/MyBetsView';
 import { ModulePlaceholder } from './components/ModulePlaceholder';
 
 // America/Chicago default sports date
@@ -261,6 +263,7 @@ export default function App() {
                 setActiveTab('props');
               }}
               onOpenWinProbability={() => setActiveTab('win-probability')}
+              onOpenParlays={() => setActiveTab('parlays')}
             />
           )}
 
@@ -294,13 +297,29 @@ export default function App() {
               games={scheduleData?.games || []}
               selectedSport={selectedSport}
               setSelectedSport={setSelectedSport}
+              selectedDate={selectedDate}
+              setSelectedDate={setSelectedDate}
               onGoToOverview={() => setActiveTab('overview')}
               initialSelectedGameId={propsTargetGameId}
             />
           )}
 
+          {activeTab === 'parlays' && (
+            <ParlaysView
+              selectedSport={selectedSport}
+              setSelectedSport={setSelectedSport}
+              selectedDate={selectedDate}
+              onGoToPicks={() => setActiveTab('picks')}
+              onGoToMyBets={() => setActiveTab('my-bets')}
+            />
+          )}
+
           {activeTab === 'sims' && (
             <SimsView games={scheduleData?.games || []} />
+          )}
+
+          {activeTab === 'my-bets' && (
+            <MyBetsView />
           )}
 
           {activeTab === 'audit' && (
@@ -312,7 +331,9 @@ export default function App() {
             activeTab !== 'win-probability' &&
             activeTab !== 'live' &&
             activeTab !== 'props' &&
+            activeTab !== 'parlays' &&
             activeTab !== 'sims' &&
+            activeTab !== 'my-bets' &&
             activeTab !== 'audit' && (
               <ModulePlaceholder
                 tabId={activeTab}

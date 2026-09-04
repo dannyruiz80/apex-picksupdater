@@ -8,12 +8,14 @@ import {
   DecisionBoardStatus,
   DecisionBoardPick,
   DecisionBoardResponse,
+  DecisionBoardSportCoverage,
 } from '../types.js';
 import { playerPropProvider } from './playerPropProvider.js';
 import { snapshotPersistenceService } from './snapshotPersistenceService.js';
 import { marketProvider } from './marketProvider.js';
 import { gameMarketModelService, GameMarketCandidateV1, GameMarketProjectionV1 } from './gameMarketModelService.js';
 import { gameMarketPredictionRepository } from './gameMarketPredictionRepository.js';
+import { formatPropSelectionLabel, humanizePropMarket } from '../propPresentation.js';
 
 const RELIABILITY_ORDER: Record<SampleReliabilityTier, number> = {
   VERY_LIMITED: 0,
@@ -65,7 +67,7 @@ function quoteToPick(game: NormalizedApexGame, quote: NormalizedPlayerPropQuote)
     v3ShadowProbability = rec.side === 'OVER' ? shadow.shadowOverProbability : shadow.shadowUnderProbability;
     if (v3ShadowProbability !== null) v3Support = v3ShadowProbability >= 0.5;
   }
-  const displayPick = `${quote.playerDisplayName} ${rec.side} ${quote.line}`;
+  const displayPick = formatPropSelectionLabel(quote.playerDisplayName, quote.providerMarketKey || quote.marketCategory, rec.side, quote.line);
   return {
     rank: 0, eventId: game.eventId, eventTitle: eventTitle(game), sport: game.sport,
     league: game.league || game.competition || game.tournamentName || game.sport, startTime: game.startTime,
@@ -84,6 +86,13 @@ function quoteToPick(game: NormalizedApexGame, quote: NormalizedPlayerPropQuote)
     rationale: buildRationale({ probability: selected.apexProbability, breakEven: selected.breakEvenProbability,
       edge: selected.modelEdgePercentagePoints, ev: selected.expectedValuePercent, reliability: reliabilityTier,
       isBestPrice: selected.isBestAvailablePrice, v3Support }),
+    bookOffers: (quote.valueAnalysis?.lineShopping?.availableBookmakers || [])
+      .map((b) => ({
+        sportsbook: b.sportsbook,
+        oddsAmerican: rec.side === 'OVER' ? b.overOddsAmerican : b.underOddsAmerican,
+        quoteTimestamp: quote.providerTimestamp,
+      }))
+      .filter((b): b is { sportsbook: string; oddsAmerican: number; quoteTimestamp: string } => typeof b.oddsAmerican === 'number' && Number.isFinite(b.oddsAmerican)),
     source: 'LIVE_EVALUATION',
   };
 }
@@ -147,6 +156,12 @@ export function gameCandidateToPick(game: NormalizedApexGame, model: GameMarketP
     modelEvidenceObservations: c.modelEvidenceObservations,
     v2ContributionPP: c.v2ContributionPP ?? null,
     v2ContributionStatus: c.v2ContributionStatus ?? 'UNAVAILABLE',
+    bookOffers: [...c.bookOffers],
+    calibrationAdjustedProbability: c.calibrationAdjustedProbability,
+    prospectiveCalibrationAdjustmentPP: c.prospectiveCalibrationAdjustmentPP,
+    gameCalibrationEvidenceTier: c.calibrationEvidenceTier,
+    gameCalibrationEce: c.calibrationExpectedError,
+    gameCalibrationBrier: c.calibrationBrierScore,
   };
 }
 
@@ -161,12 +176,12 @@ function snapshotToPick(snapshot: DurableHistoricalPropSnapshot): DecisionBoardP
   const shadow = snapshot.mlbPitcherKV3;
   const shadowSideProbability = snapshot.side === 'OVER' ? shadow?.shadowOverProbability ?? null : shadow?.shadowUnderProbability ?? null;
   const v3Support = shadowSideProbability === null ? null : shadowSideProbability >= 0.5;
-  const displayPick = `${snapshot.playerName} ${snapshot.side} ${snapshot.line}`;
+  const displayPick = formatPropSelectionLabel(snapshot.playerName, snapshot.market, snapshot.side, snapshot.line);
   return {
     rank: 0, eventId: snapshot.eventId, eventTitle: `${snapshot.team || 'Team'} vs ${snapshot.opponent || 'Opponent'}`,
     sport: snapshot.sport, league: snapshot.league, startTime: snapshot.eventStartTime, pickType: 'PLAYER_PROP', displayPick,
     selectionLabel: displayPick, gameMarketType: null, playerName: snapshot.playerName, playerId: snapshot.playerId,
-    marketKey: snapshot.market, marketCategory: snapshot.market, side: snapshot.side, line: snapshot.line,
+    marketKey: snapshot.market, marketCategory: humanizePropMarket(snapshot.market), side: snapshot.side, line: snapshot.line,
     sportsbook: snapshot.sportsbook, oddsAmerican: snapshot.americanOdds, apexProbability: snapshot.apexProbability,
     breakEvenProbability: snapshot.breakEvenProbability, edgePercentagePoints: snapshot.modelEdge,
     expectedValuePercent: snapshot.expectedValue, reliabilityTier: snapshot.reliabilityTier, modelVersion: snapshot.modelVersion,
@@ -199,10 +214,91 @@ export function rankDecisionBoardPicks(picks: DecisionBoardPick[], limit = 10): 
   }).slice(0,limit).map((p,i)=>({...p,rank:i+1}));
 }
 
+export function diversifyDecisionBoardPicks(picks: DecisionBoardPick[], limit = 12): DecisionBoardPick[] {
+  const ranked = rankDecisionBoardPicks(picks, Math.max(limit * 4, 24));
+  if (ranked.length <= 1) return ranked.slice(0, limit).map((p,i)=>({...p,rank:i+1}));
+
+  const out: DecisionBoardPick[] = [ranked[0]];
+  const seenIds = new Set([`${ranked[0].eventId}|${ranked[0].selectionLabel}`]);
+  const seenSports = new Set([ranked[0].sport]);
+
+  // Give every other sport with a qualified pick one visible opportunity before
+  // filling remaining slots by the normal production rank.
+  for (const pick of ranked) {
+    if (out.length >= Math.min(limit, 6)) break;
+    if (seenSports.has(pick.sport)) continue;
+    const id = `${pick.eventId}|${pick.selectionLabel}`;
+    if (seenIds.has(id)) continue;
+    out.push(pick);
+    seenIds.add(id);
+    seenSports.add(pick.sport);
+  }
+
+  for (const pick of ranked) {
+    if (out.length >= limit) break;
+    const id = `${pick.eventId}|${pick.selectionLabel}`;
+    if (seenIds.has(id)) continue;
+    out.push(pick);
+    seenIds.add(id);
+  }
+  return out.map((p,i)=>({...p,rank:i+1}));
+}
+
+function addReason(target: Record<string, number>, reason: string, count = 1) {
+  const key = (reason || 'UNKNOWN').trim() || 'UNKNOWN';
+  target[key] = (target[key] || 0) + Math.max(1, count);
+}
+
+export function selectDecisionBoardSlateRows(
+  games: NormalizedApexGame[],
+  sportFilter: ApexSportFilter,
+  maxGamesRaw: number,
+  nowMs = Date.now(),
+): NormalizedApexGame[] {
+  const maxGames = Math.max(1, Math.min(12, Math.floor(maxGamesRaw || (sportFilter === 'ALL' ? 8 : 6))));
+  const sportOrder: ApexSport[] = ['MLB', 'NFL', 'NBA', 'WNBA', 'NHL', 'SOCCER', 'TENNIS'];
+  const candidates = games.filter((g) => g.status === 'UPCOMING' && g.startTime && Date.parse(g.startTime) > nowMs &&
+    (sportFilter === 'ALL' || g.sport === sportFilter) &&
+    (g.sport !== 'TENNIS' || playerPropProvider.getPropMarketKeysForSport(g.sport).length > 0))
+    .sort((a,b) => Date.parse(a.startTime) - Date.parse(b.startTime));
+  if (sportFilter !== 'ALL') return candidates.slice(0, maxGames);
+
+  const bySport = new Map<ApexSport, NormalizedApexGame[]>();
+  for (const g of candidates) {
+    const bucket = bySport.get(g.sport) || [];
+    bucket.push(g);
+    bySport.set(g.sport, bucket);
+  }
+  const out: NormalizedApexGame[] = [];
+  let round = 0;
+  while (out.length < maxGames) {
+    let added = false;
+    for (const sport of sportOrder) {
+      const game = bySport.get(sport)?.[round];
+      if (!game) continue;
+      out.push(game);
+      added = true;
+      if (out.length >= maxGames) break;
+    }
+    if (!added) break;
+    round++;
+  }
+  return out;
+}
+
 export class DecisionBoardService {
-  async evaluateEvent(game: NormalizedApexGame): Promise<{ status: DecisionBoardStatus; message: string; picks: DecisionBoardPick[]; modelDataAvailable: boolean }> {
-    if (game.status !== 'UPCOMING' || !game.startTime || Date.parse(game.startTime) <= Date.now())
-      return { status:'NO_UPCOMING_EVENTS', message:'Only verified pregame events can be analyzed for a pick.', picks:[], modelDataAvailable:false };
+  async evaluateEvent(game: NormalizedApexGame): Promise<{
+    status: DecisionBoardStatus;
+    message: string;
+    picks: DecisionBoardPick[];
+    modelDataAvailable: boolean;
+    rejectionReasons: Record<string, number>;
+  }> {
+    const rejectionReasons: Record<string, number> = {};
+    if (game.status !== 'UPCOMING' || !game.startTime || Date.parse(game.startTime) <= Date.now()) {
+      addReason(rejectionReasons, 'EVENT_NOT_PREGAME');
+      return { status:'NO_UPCOMING_EVENTS', message:'Only verified pregame events can be analyzed for a pick.', picks:[], modelDataAvailable:false, rejectionReasons };
+    }
 
     const picks: DecisionBoardPick[] = [];
     let modelDataAvailable = false;
@@ -212,9 +308,15 @@ export class DecisionBoardService {
     // Independent team-game market path. Tennis is intentionally excluded because it uses a separate player model.
     if (game.sport !== 'TENNIS') {
       const marketResult = await marketProvider.getMarketsForEvent(game);
-      if (marketResult.status === 'NOT_CONFIGURED') providerConfigured = false;
-      else if (marketResult.status === 'QUOTA_EXCEEDED') quotaBlocked = true;
-      else if (marketResult.status === 'SUCCESS' && marketResult.markets) {
+      if (marketResult.status === 'NOT_CONFIGURED') {
+        providerConfigured = false;
+        addReason(rejectionReasons, 'ODDS_PROVIDER_NOT_CONFIGURED');
+      } else if (marketResult.status === 'QUOTA_EXCEEDED') {
+        quotaBlocked = true;
+        addReason(rejectionReasons, 'ODDS_PROVIDER_QUOTA_BLOCKED');
+      } else if (marketResult.status !== 'SUCCESS' || !marketResult.markets) {
+        addReason(rejectionReasons, `GAME_MARKET_${marketResult.status}`);
+      } else {
         const model = await gameMarketModelService.buildProjection(game);
         if (model.status === 'AVAILABLE') {
           modelDataAvailable = true;
@@ -230,54 +332,146 @@ export class DecisionBoardService {
           });
           gameMarketPredictionRepository.append(game, evaluation);
           picks.push(...evaluation.qualified.map((c)=>gameCandidateToPick(game, model, c)));
+          for (const candidate of evaluation.candidates) {
+            if (candidate.qualifies) continue;
+            if (candidate.reasonCodes?.length) candidate.reasonCodes.forEach((reason)=>addReason(rejectionReasons, reason));
+            else addReason(rejectionReasons, 'GAME_MARKET_NOT_QUALIFIED');
+          }
+          if (!evaluation.candidates.length) addReason(rejectionReasons, 'NO_EXECUTABLE_GAME_MARKET_CANDIDATES');
+        } else {
+          addReason(rejectionReasons, `GAME_MODEL_${model.status}`);
         }
       }
     }
 
     // Existing player-prop production path remains active in parallel where provider markets exist.
-    if (playerPropProvider.getPropMarketKeysForSport(game.sport).length > 0 && !quotaBlocked) {
+    const propKeys = playerPropProvider.getPropMarketKeysForSport(game.sport);
+    if (propKeys.length > 0 && !quotaBlocked) {
       const propResult = await playerPropProvider.getPlayerPropsForGame(game);
-      if (propResult.status === 'NOT_CONFIGURED') providerConfigured = false;
-      else if (propResult.status === 'QUOTA_EXCEEDED') quotaBlocked = true;
-      else if (propResult.status === 'SUCCESS') {
+      if (propResult.status === 'NOT_CONFIGURED') {
+        providerConfigured = false;
+        addReason(rejectionReasons, 'PROP_PROVIDER_NOT_CONFIGURED');
+      } else if (propResult.status === 'QUOTA_EXCEEDED') {
+        quotaBlocked = true;
+        addReason(rejectionReasons, 'PROP_PROVIDER_QUOTA_BLOCKED');
+      } else if (propResult.status === 'SUCCESS') {
         modelDataAvailable = true;
-        picks.push(...(propResult.props || []).map((q)=>quoteToPick(game,q)).filter((p):p is DecisionBoardPick=>p!==null));
+        for (const quote of propResult.props || []) {
+          const pick = quoteToPick(game, quote);
+          if (pick) {
+            picks.push(pick);
+            continue;
+          }
+          const rec = quote.valueAnalysis?.bestRecommendation;
+          if (rec?.reasonCodes?.length) rec.reasonCodes.forEach((reason)=>addReason(rejectionReasons, `PROP_${reason}`));
+          else addReason(rejectionReasons, 'PROP_MODEL_OR_VALUE_UNAVAILABLE');
+        }
+        if (!(propResult.props || []).length) addReason(rejectionReasons, 'PROP_PROVIDER_RETURNED_ZERO_QUOTES');
+      } else {
+        addReason(rejectionReasons, `PROP_${propResult.status}`);
       }
+    } else if (game.sport === 'TENNIS') {
+      addReason(rejectionReasons, 'TENNIS_PRODUCTION_MODEL_NOT_CONNECTED_TO_DECISION_BOARD');
     }
 
-    if (!providerConfigured) return { status:'NOT_CONFIGURED', message:'Odds provider is not configured.', picks:[], modelDataAvailable:false };
-    if (quotaBlocked) return { status:'QUOTA_BLOCKED', message:'Odds provider quota guard blocked the scan.', picks:rankDecisionBoardPicks(picks,5), modelDataAvailable };
+    if (!providerConfigured) return { status:'NOT_CONFIGURED', message:'Odds provider is not configured.', picks:[], modelDataAvailable:false, rejectionReasons };
+    if (quotaBlocked) return { status:'QUOTA_BLOCKED', message:'Odds provider quota guard blocked the scan.', picks:rankDecisionBoardPicks(picks,5), modelDataAvailable, rejectionReasons };
     const ranked = rankDecisionBoardPicks(picks,5);
+    if (!ranked.length && Object.keys(rejectionReasons).length === 0) addReason(rejectionReasons, 'NO_QUALIFIED_CANDIDATE');
     return {
       status: ranked.length ? 'SUCCESS' : 'NO_QUALIFIED_PICKS',
       message: ranked.length ? `${ranked.length} qualified recommendation${ranked.length===1?'':'s'} found.` :
         modelDataAvailable ? 'Models were evaluated, but no price cleared every recommendation gate.' : 'Independent model data was unavailable for this event.',
-      picks: ranked, modelDataAvailable,
+      picks: ranked, modelDataAvailable, rejectionReasons,
     };
   }
 
   async scanGames(games: NormalizedApexGame[], sportFilter: ApexSportFilter, scheduleDate: string, requestedMaxGames: number): Promise<DecisionBoardResponse> {
-    const maxGames = Math.max(1,Math.min(5,Math.floor(requestedMaxGames||3)));
-    const candidates = games.filter((g)=>g.status==='UPCOMING' && g.startTime && Date.parse(g.startTime)>Date.now() &&
-      (g.sport !== 'TENNIS' || playerPropProvider.getPropMarketKeysForSport(g.sport).length>0))
-      .sort((a,b)=>Date.parse(a.startTime)-Date.parse(b.startTime));
-    const upcoming: NormalizedApexGame[]=[];
-    if (sportFilter==='ALL') {
-      const used=new Set<ApexSport>();
-      for (const g of candidates) if(!used.has(g.sport)){upcoming.push(g);used.add(g.sport);if(upcoming.length>=maxGames)break;}
-      if(upcoming.length<maxGames) for(const g of candidates){if(upcoming.some(x=>x.eventId===g.eventId))continue;upcoming.push(g);if(upcoming.length>=maxGames)break;}
-    } else upcoming.push(...candidates.slice(0,maxGames));
-    if(!upcoming.length) return {status:'NO_UPCOMING_EVENTS',message:'No verified upcoming events are available to scan.',generatedAt:new Date().toISOString(),sportFilter,scheduleDate,requestedMaxGames:maxGames,gamesScanned:0,gamesWithModelData:0,qualifiedCount:0,picks:[],notes:['No provider credits were used because there were no eligible events.']};
+    const maxGames = Math.max(1, Math.min(12, Math.floor(requestedMaxGames || (sportFilter === 'ALL' ? 8 : 6))));
+    const sportOrder: ApexSport[] = ['MLB', 'NFL', 'NBA', 'WNBA', 'NHL', 'SOCCER', 'TENNIS'];
+    const candidates = games.filter((g) => g.status === 'UPCOMING' && g.startTime && Date.parse(g.startTime) > Date.now() &&
+      (sportFilter === 'ALL' || g.sport === sportFilter))
+      .sort((a,b) => Date.parse(a.startTime) - Date.parse(b.startTime));
 
-    const picks:DecisionBoardPick[]=[]; let modelData=0; let status:DecisionBoardStatus='NO_QUALIFIED_PICKS'; const notes:string[]=[];
-    for(const game of upcoming){const evaluated=await this.evaluateEvent(game);if(evaluated.modelDataAvailable)modelData++;picks.push(...evaluated.picks);if(evaluated.status==='NOT_CONFIGURED'){status='NOT_CONFIGURED';notes.push('Scan stopped because ODDS_API_KEY is not configured.');break;}if(evaluated.status==='QUOTA_BLOCKED'){status='QUOTA_BLOCKED';notes.push('Scan stopped by the provider quota guard.');break;}}
-    const ranked=rankDecisionBoardPicks(picks,10); if(ranked.length)status='SUCCESS';else if(status!=='NOT_CONFIGURED'&&status!=='QUOTA_BLOCKED')status='NO_QUALIFIED_PICKS';
+    const coverage = new Map<ApexSport, DecisionBoardSportCoverage>();
+    const ensureCoverage = (sport: ApexSport) => {
+      let row = coverage.get(sport);
+      if (!row) {
+        const gameConnected = sport !== 'TENNIS';
+        const propConnected = playerPropProvider.getPropMarketKeysForSport(sport).length > 0;
+        row = {
+          sport,
+          scheduleEvents: 0,
+          scannedEvents: 0,
+          eventsWithModelData: 0,
+          qualifiedPicks: 0,
+          productionConnection: gameConnected && propConnected ? 'CONNECTED' : (gameConnected || propConnected ? 'PARTIAL' : 'NOT_CONNECTED'),
+          rejectionReasons: {},
+          lastStatus: null,
+          lastMessage: null,
+        };
+        coverage.set(sport, row);
+      }
+      return row;
+    };
+    for (const g of candidates) ensureCoverage(g.sport).scheduleEvents++;
+    if (sportFilter !== 'ALL') ensureCoverage(sportFilter);
+
+    const upcoming = selectDecisionBoardSlateRows(games, sportFilter, maxGames);
+
+    const coverageBySport = () => sportOrder.filter((sport) => coverage.has(sport)).map((sport) => coverage.get(sport)!);
+    const scanMode: DecisionBoardResponse['scanMode'] = sportFilter === 'ALL' ? 'BROAD_MULTI_SPORT' : maxGames > 3 ? 'BROAD_SINGLE_SPORT' : 'NARROW';
+
+    if (!upcoming.length) return {
+      status:'NO_UPCOMING_EVENTS', message:'No verified upcoming events are available to scan.', generatedAt:new Date().toISOString(),
+      sportFilter, scheduleDate, requestedMaxGames:maxGames, gamesScanned:0, gamesWithModelData:0, qualifiedCount:0, picks:[],
+      coverageBySport: coverageBySport(), scanMode,
+      notes:['No provider credits were used because there were no eligible events.'],
+    };
+
+    const picks: DecisionBoardPick[] = [];
+    let modelData = 0;
+    let status: DecisionBoardStatus = 'NO_QUALIFIED_PICKS';
+    const notes: string[] = [];
+    for (const game of upcoming) {
+      const evaluated = await this.evaluateEvent(game);
+      const row = ensureCoverage(game.sport);
+      row.scannedEvents++;
+      row.lastStatus = evaluated.status;
+      row.lastMessage = evaluated.message;
+      if (evaluated.modelDataAvailable) { modelData++; row.eventsWithModelData++; }
+      row.qualifiedPicks += evaluated.picks.length;
+      Object.entries(evaluated.rejectionReasons).forEach(([reason,count]) => addReason(row.rejectionReasons, reason, count));
+      picks.push(...evaluated.picks);
+      if (evaluated.status === 'NOT_CONFIGURED') { status='NOT_CONFIGURED'; notes.push('Scan stopped because ODDS_API_KEY is not configured.'); break; }
+      if (evaluated.status === 'QUOTA_BLOCKED') { status='QUOTA_BLOCKED'; notes.push('Scan stopped by the provider quota guard.'); break; }
+    }
+
+    const ranked = diversifyDecisionBoardPicks(picks, 12);
+    if (ranked.length) status = 'SUCCESS';
+    else if (status !== 'NOT_CONFIGURED' && status !== 'QUOTA_BLOCKED') status = 'NO_QUALIFIED_PICKS';
+
+    notes.push('Decision-board scans now use a broader event budget (up to 12) instead of the legacy 3-game slice.');
+    if (sportFilter === 'ALL') notes.push('ALL SPORTS mode round-robins sports before repeating one sport so MLB cannot consume every scan slot.');
+    else notes.push(`${sportFilter} filter is active; only ${sportFilter} events are eligible for this scan.`);
+    notes.push('Per-sport coverage now shows scheduled, scanned, model-ready, qualified, production-connection state and the leading rejection reasons.');
+    notes.push('Visible recommendations are sport-diversified only when another sport actually has a production-qualified pick; thresholds are never lowered to force representation.');
     notes.push('Game-market probabilities are produced independently from public historical team results; current sportsbook prices enter only after forecasting for EV/edge evaluation.');
-    notes.push('APEX_GAME_MARKET_V1 is EARLY EVIDENCE. Its prospective predictions are logged separately for calibration and challenger testing.');
-    notes.push('Existing player-prop production models remain ranked in the same board; NO_BET results are never promoted.');
-    notes.push(`Slate scan is capped at ${maxGames} event${maxGames===1?'':'s'} and runs sequentially to limit keyed-provider usage.`);
-    if(sportFilter==='ALL')notes.push('ALL SPORTS mode samples distinct sports first before repeating a sport.');
-    return {status,message:ranked.length?`${ranked.length} qualified pick${ranked.length===1?'':'s'} found from ${upcoming.length} scanned event${upcoming.length===1?'':'s'}.`:status==='NOT_CONFIGURED'?'The odds provider is not configured.':status==='QUOTA_BLOCKED'?'The quota guard stopped the scan before additional provider requests.':'No recommendation cleared the active gates in the scanned events. PASS is the correct output.',generatedAt:new Date().toISOString(),sportFilter,scheduleDate,requestedMaxGames:maxGames,gamesScanned:upcoming.length,gamesWithModelData:modelData,qualifiedCount:ranked.length,picks:ranked,notes};
+    notes.push('APEX_GAME_MARKET_V1 remains EARLY EVIDENCE and is subject to calibration/integrity guardrails.');
+    notes.push('Existing player-prop production models remain ranked in the same board; future-date prop markets may not be posted yet, so a future slate can legitimately rely more heavily on game markets.');
+
+    const coverageRows = coverageBySport();
+    return {
+      status,
+      message: ranked.length
+        ? `${ranked.length} qualified pick${ranked.length===1?'':'s'} found from ${upcoming.length} scanned event${upcoming.length===1?'':'s'}.`
+        : status === 'NOT_CONFIGURED' ? 'The odds provider is not configured.'
+        : status === 'QUOTA_BLOCKED' ? 'The quota guard stopped the scan before additional provider requests.'
+        : 'No recommendation cleared the active gates in the scanned events. PASS is the correct output.',
+      generatedAt:new Date().toISOString(), sportFilter, scheduleDate, requestedMaxGames:maxGames,
+      gamesScanned:upcoming.length, gamesWithModelData:modelData, qualifiedCount:ranked.length, picks:ranked,
+      coverageBySport:coverageRows, scanMode, notes,
+    };
   }
 
   getSavedBoard(sportFilter:ApexSportFilter,scheduleDate:string):DecisionBoardResponse{

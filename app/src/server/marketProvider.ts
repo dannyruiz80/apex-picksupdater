@@ -148,13 +148,13 @@ export class MarketProviderService {
         const leagueLower = (game.league || '').toLowerCase();
         if (leagueLower.includes('premier') || leagueLower.includes('epl')) return ['soccer_epl'];
         if (leagueLower.includes('major league') || leagueLower.includes('mls')) return ['soccer_usa_mls'];
-        if (leagueLower.includes('liga mx') || leagueLower.includes('mexico')) return ['soccer_mexico_ligamx'];
         if (leagueLower.includes('champions league') || leagueLower.includes('ucl')) return ['soccer_uefa_champs_league'];
         if (leagueLower.includes('europa')) return ['soccer_uefa_europa_league'];
         if (leagueLower.includes('la liga') || leagueLower.includes('spain')) return ['soccer_spain_la_liga'];
         if (leagueLower.includes('bundesliga') || leagueLower.includes('germany')) return ['soccer_germany_bundesliga'];
         if (leagueLower.includes('serie a') || leagueLower.includes('italy')) return ['soccer_italy_serie_a'];
         if (leagueLower.includes('ligue 1') || leagueLower.includes('france')) return ['soccer_france_ligue_one'];
+        if (leagueLower.includes('liga mx') || leagueLower.includes('mexico') || leagueLower.includes('mexican')) return ['soccer_mexico_ligamx'];
         return ['soccer_epl', 'soccer_usa_mls', 'soccer_uefa_champs_league'];
       }
       case 'TENNIS': {
