@@ -262,6 +262,23 @@ export function isDisplayedCoverageBlocker(sport: ApexSport, reason: string): bo
   return true;
 }
 
+
+function unresolvedTennisParticipant(name: string | null | undefined): boolean {
+  const normalized = String(name || '').trim().toLowerCase();
+  return !normalized || normalized === 'tbd' || normalized === 'unknown' || normalized === 'unknown player' || normalized === 'player a' || normalized === 'player b';
+}
+
+export function isTennisDecisionBoardEligible(game: NormalizedApexGame): boolean {
+  if (game.sport !== 'TENNIS') return true;
+  if (game.tennisMatchFormat === 'DOUBLES' || game.tennisMatchFormat === 'OTHER') return false;
+  const a = String(game.playerAName || game.awayTeam || '').trim();
+  const b = String(game.playerBName || game.homeTeam || '').trim();
+  if (unresolvedTennisParticipant(a) || unresolvedTennisParticipant(b)) return false;
+  if (a.includes('/') || b.includes('/')) return false;
+  if (a.toLowerCase() === b.toLowerCase()) return false;
+  return true;
+}
+
 export function selectDecisionBoardSlateRows(
   games: NormalizedApexGame[],
   sportFilter: ApexSportFilter,
@@ -271,7 +288,7 @@ export function selectDecisionBoardSlateRows(
   const maxGames = Math.max(1, Math.min(48, Math.floor(maxGamesRaw || (sportFilter === 'ALL' ? 48 : sportFilter === 'TENNIS' ? 30 : 12))));
   const sportOrder: ApexSport[] = ['MLB', 'NFL', 'NBA', 'WNBA', 'NHL', 'SOCCER', 'TENNIS'];
   const candidates = games.filter((g) => g.status === 'UPCOMING' && g.startTime && Date.parse(g.startTime) > nowMs &&
-    (sportFilter === 'ALL' || g.sport === sportFilter))
+    (sportFilter === 'ALL' || g.sport === sportFilter) && isTennisDecisionBoardEligible(g))
     .sort((a,b) => Date.parse(a.startTime) - Date.parse(b.startTime));
   if (sportFilter !== 'ALL') return candidates.slice(0, maxGames);
 
@@ -422,7 +439,7 @@ export class DecisionBoardService {
     const maxGames = Math.max(1, Math.min(48, Math.floor(requestedMaxGames || (sportFilter === 'ALL' ? 48 : sportFilter === 'TENNIS' ? 30 : 12))));
     const sportOrder: ApexSport[] = ['MLB', 'NFL', 'NBA', 'WNBA', 'NHL', 'SOCCER', 'TENNIS'];
     const candidates = games.filter((g) => g.status === 'UPCOMING' && g.startTime && Date.parse(g.startTime) > Date.now() &&
-      (sportFilter === 'ALL' || g.sport === sportFilter))
+      (sportFilter === 'ALL' || g.sport === sportFilter) && isTennisDecisionBoardEligible(g))
       .sort((a,b) => Date.parse(a.startTime) - Date.parse(b.startTime));
 
     const coverage = new Map<ApexSport, DecisionBoardSportCoverage>();
@@ -488,7 +505,8 @@ export class DecisionBoardService {
     notes.push('Decision-board scans now support up to 48 events in broad ALL SPORTS mode so large slates receive meaningful model coverage instead of a tiny sample.');
     if (sportFilter === 'ALL') notes.push('ALL SPORTS mode keeps round-robin fairness across active sports while allowing enough rounds for large Tennis slates to receive meaningful coverage.');
     else notes.push(`${sportFilter} filter is active; only ${sportFilter} events are eligible for this scan.`);
-    notes.push('Per-sport coverage now shows scheduled, scanned, model-ready, qualified, production-connection state and the leading rejection reasons.');
+    notes.push('Per-sport coverage now shows decision-board-eligible scheduled events, scanned events, model-ready events, qualified picks, production-connection state and the leading rejection reasons.');
+    notes.push('Tennis decision-board eligibility is singles-only with two resolved individual participants; doubles and TBD bracket placeholders remain visible in Tennis schedule/live views but are excluded before model/odds requests.');
     notes.push('Visible recommendations are sport-diversified only when another sport actually has a production-qualified pick; thresholds are never lowered to force representation.');
     notes.push('Game-market probabilities are produced independently from public historical team results; current sportsbook prices enter only after forecasting for EV/edge evaluation.');
     notes.push('APEX_GAME_MARKET_V1 remains EARLY EVIDENCE and is subject to calibration/integrity guardrails.');

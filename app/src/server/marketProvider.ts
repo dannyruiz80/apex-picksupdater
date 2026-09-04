@@ -17,13 +17,66 @@ import { marketMatcher, ProviderRawEvent } from './marketMatcher';
 
 const ODDS_API_BASE = 'https://api.the-odds-api.com/v4';
 
-interface ProviderSportDiscovery {
+export interface ProviderSportDiscovery {
   key: string;
   group: string;
   title: string;
   description: string;
   active: boolean;
   has_outrights: boolean;
+}
+
+function normalizeTournamentText(value: string): string {
+  return String(value || '')
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function tournamentTokens(value: string): string[] {
+  const stop = new Set(['atp', 'wta', 'tennis', 'tour', 'men', 'mens', 'women', 'womens', 'singles', 'open', 'championship', 'championships', 'presented', 'sponsored', '2026']);
+  return normalizeTournamentText(value).split(' ').filter((t) => t && !stop.has(t));
+}
+
+function tennisTournamentSimilarity(targetRaw: string, item: ProviderSportDiscovery): number {
+  const target = normalizeTournamentText(targetRaw);
+  const provider = normalizeTournamentText(`${item.key.replace(/_/g, ' ')} ${item.title || ''} ${item.description || ''}`);
+  if (!target || !provider) return 0;
+  const title = normalizeTournamentText(item.title || '');
+  if (provider.includes(target) || (title && target.includes(title))) return 1;
+  const targetTokens = tournamentTokens(targetRaw);
+  const providerTokens = new Set(tournamentTokens(`${item.key.replace(/_/g, ' ')} ${item.title || ''} ${item.description || ''}`));
+  if (!targetTokens.length || !providerTokens.size) return 0;
+  let matched = 0;
+  for (const token of targetTokens) if (providerTokens.has(token)) matched++;
+  return matched / targetTokens.length;
+}
+
+export function rankTennisProviderSportKeys(
+  discovered: ProviderSportDiscovery[],
+  game?: NormalizedApexGame,
+): string[] {
+  const desiredTour = game?.tour || null;
+  const candidates = discovered.filter((item) => {
+    const k = String(item.key || '').toLowerCase();
+    if (item.active === false || item.has_outrights) return false;
+    if (desiredTour === 'ATP') return k.startsWith('tennis_atp_');
+    if (desiredTour === 'WTA') return k.startsWith('tennis_wta_');
+    return k.startsWith('tennis_atp_') || k.startsWith('tennis_wta_');
+  });
+
+  const target = String(game?.tournamentName || game?.competition || game?.league || '').trim();
+  const ranked = candidates
+    .map((item) => ({ item, score: tennisTournamentSimilarity(target, item) }))
+    .sort((a, b) => b.score - a.score || a.item.key.localeCompare(b.item.key));
+  const strong = ranked.filter((row) => row.score >= 0.50).slice(0, 3).map((row) => row.item.key);
+  if (strong.length) return strong;
+
+  // Fail-safe fallback stays tour-specific and capped at three active keys to preserve quota discipline.
+  return ranked.slice(0, 3).map((row) => row.item.key);
 }
 
 export class MarketProviderService {
@@ -159,55 +212,11 @@ export class MarketProviderService {
       }
       case 'TENNIS': {
         const discovered = await this.discoverActiveSports();
-        const tournamentLower = (game?.tournamentName || game?.league || '').toLowerCase();
-
-        const matchingKeys: string[] = [];
-        const isAtp = tournamentLower.includes('atp') || game?.tour === 'ATP';
-        const isWta = tournamentLower.includes('wta') || game?.tour === 'WTA';
-
-        for (const item of discovered) {
-          const k = item.key.toLowerCase();
-          if (k.startsWith('tennis_atp_') && (isAtp || !isWta)) {
-            if (!game || this.isTennisTournamentMatch(tournamentLower, item.title, item.description)) {
-              matchingKeys.push(item.key);
-            }
-          } else if (k.startsWith('tennis_wta_') && (isWta || !isAtp)) {
-            if (!game || this.isTennisTournamentMatch(tournamentLower, item.title, item.description)) {
-              matchingKeys.push(item.key);
-            }
-          }
-        }
-
-        // Fallback to active tennis keys if none specifically matched tournament name
-        if (matchingKeys.length === 0) {
-          const fallback = discovered
-            .filter((d) => d.key.startsWith('tennis_atp_') || d.key.startsWith('tennis_wta_'))
-            .map((d) => d.key);
-          return fallback.slice(0, 2); // Limit to top 2 to protect cost
-        }
-
-        return matchingKeys.slice(0, 3);
+        return rankTennisProviderSportKeys(discovered, game);
       }
       default:
         return [];
     }
-  }
-
-  private isTennisTournamentMatch(
-    apexTournamentName: string,
-    providerTitle: string,
-    providerDesc: string
-  ): boolean {
-    const t1 = apexTournamentName.toLowerCase();
-    const t2 = (providerTitle + ' ' + providerDesc).toLowerCase();
-
-    if (t1.includes('us open') && t2.includes('us open')) return true;
-    if (t1.includes('wimbledon') && t2.includes('wimbledon')) return true;
-    if (t1.includes('french') || t1.includes('roland')) return t2.includes('french') || t2.includes('roland');
-    if (t1.includes('australian') && t2.includes('australian')) return true;
-    if (t1.includes('cincinnati') && t2.includes('cincinnati')) return true;
-
-    return false;
   }
 
   /**

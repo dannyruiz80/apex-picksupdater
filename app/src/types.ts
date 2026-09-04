@@ -15,6 +15,7 @@ export type ApexSport = 'MLB' | 'NFL' | 'NBA' | 'WNBA' | 'NHL' | 'SOCCER' | 'TEN
 export type ApexSportFilter = 'ALL' | 'MLB' | 'NFL' | 'NBA' | 'WNBA' | 'NHL' | 'SOCCER' | 'TENNIS';
 
 export type TennisTour = 'ATP' | 'WTA';
+export type TennisMatchFormat = 'SINGLES' | 'DOUBLES' | 'OTHER';
 
 export type TennisTourFilter = 'ALL' | 'ATP' | 'WTA';
 
@@ -80,6 +81,7 @@ export interface NormalizedApexGame {
   round?: string | null;
   court?: string | null;
   surface?: string | null; // only when verified
+  tennisMatchFormat?: TennisMatchFormat | null;
   playerAId?: string | null;
   playerAName?: string | null;
   playerACountry?: string | null;
