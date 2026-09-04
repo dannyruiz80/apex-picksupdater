@@ -38,6 +38,30 @@ interface WnbaBacktestReport {
   bySeason: Array<{ season: number; evaluatedGames: number; brierScore: number | null; logLoss: number | null; meanAbsoluteMarginError: number | null; meanAbsoluteTotalError: number | null; }>;
 }
 
+interface ContextLearningSlice {
+  sport: 'ALL' | 'MLB' | 'SOCCER' | 'WNBA' | 'NFL' | 'NCAAF';
+  gradedEvents: number;
+  baseTotalMae: number | null;
+  challengerTotalMae: number | null;
+  improvementPct: number | null;
+  improvedGames: number;
+  improvementRate: number | null;
+  recentImprovementPct: number | null;
+  promotionEligible: boolean;
+  promotionStatus: 'COLLECTING' | 'PROMOTION_ELIGIBLE' | 'CHALLENGER_LEADING' | 'NO_PROVEN_GAIN';
+}
+interface ContextLearningStatus {
+  version: string;
+  generatedAt: string;
+  policy: string;
+  overall: ContextLearningSlice;
+  bySport: ContextLearningSlice[];
+  totalFrozenPregameSnapshots: number;
+  uniqueLearningSnapshots: number;
+  duplicateLearningSnapshotsSuppressed: number;
+  featureLeaderboard: Array<{ sport: string; key: string; evidenceCount: number; helpRate: number | null; meanErrorGain: number | null; learnedMultiplier: number }>;
+}
+
 const fmtPct = (v: number | null, digits = 1) => (v === null ? '—' : `${(v * 100).toFixed(digits)}%`);
 const fmtNum = (v: number | null, digits = 2) => (v === null ? '—' : v.toFixed(digits));
 const fmtSigned = (v: number | null, suffix = '%') => v === null ? '—' : `${v >= 0 ? '+' : ''}${v.toFixed(1)}${suffix}`;
@@ -45,7 +69,7 @@ const fmtOdds = (v: number | null) => v === null ? '—' : v > 0 ? `+${v}` : `${
 const localDateKey = (d = new Date()) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
 
 export const SimsView: React.FC<SimsViewProps> = ({ games }) => {
-  const [mode, setMode] = useState<'MLB' | 'WNBA'>('MLB');
+  const [mode, setMode] = useState<'MLB' | 'WNBA' | 'CONTEXT'>('MLB');
   const eligibleMlb = useMemo(() => games.filter(g => g.sport === 'MLB' && g.status === 'UPCOMING' && Boolean(g.startTime)), [games]);
   const eligibleWnbaCurrent = useMemo(() => games.filter(g => g.sport === 'WNBA' && g.status === 'UPCOMING' && g.pregameBetEligible !== false && Boolean(g.startTime)), [games]);
 
@@ -66,6 +90,8 @@ export const SimsView: React.FC<SimsViewProps> = ({ games }) => {
   const [backtestLoading, setBacktestLoading] = useState(false);
   const [backtestError, setBacktestError] = useState<string | null>(null);
   const [backtest, setBacktest] = useState<WnbaBacktestReport | null>(null);
+  const [contextLearning, setContextLearning] = useState<ContextLearningStatus | null>(null);
+  const [contextLoading, setContextLoading] = useState(false);
   const currentYear = new Date().getFullYear();
   const [startSeason, setStartSeason] = useState(currentYear - 2);
   const [endSeason, setEndSeason] = useState(currentYear);
@@ -79,7 +105,19 @@ export const SimsView: React.FC<SimsViewProps> = ({ games }) => {
       .then(r => r.json())
       .then(d => setBacktest(d?.report || null))
       .catch(() => undefined);
+    fetch('/api/ml/context-learning/status')
+      .then(r => r.json())
+      .then(d => setContextLearning(d || null))
+      .catch(() => undefined);
   }, []);
+
+  const refreshContextLearning = async () => {
+    setContextLoading(true);
+    try {
+      const res = await fetch('/api/ml/context-learning/status');
+      if (res.ok) setContextLearning(await res.json());
+    } finally { setContextLoading(false); }
+  };
 
   const runMlb = async () => {
     if (!selectedMlb) return;
@@ -152,10 +190,13 @@ export const SimsView: React.FC<SimsViewProps> = ({ games }) => {
         <div className="inline-flex rounded-xl border border-slate-800 bg-slate-950 p-1">
           <button onClick={() => setMode('MLB')} className={`px-4 py-2 rounded-lg text-xs font-bold ${mode === 'MLB' ? 'bg-emerald-500/15 text-emerald-300' : 'text-slate-400'}`}>MLB Pitcher K</button>
           <button onClick={() => setMode('WNBA')} className={`px-4 py-2 rounded-lg text-xs font-bold ${mode === 'WNBA' ? 'bg-cyan-500/15 text-cyan-300' : 'text-slate-400'}`}>WNBA Game Model</button>
+          <button onClick={() => setMode('CONTEXT')} className={`px-4 py-2 rounded-lg text-xs font-bold ${mode === 'CONTEXT' ? 'bg-violet-500/15 text-violet-300' : 'text-slate-400'}`}>Context Learning</button>
         </div>
       </div>
 
-      {mode === 'WNBA' ? (
+      {mode === 'CONTEXT' ? (
+        <ContextLearningPanel status={contextLearning} loading={contextLoading} onRefresh={refreshContextLearning} />
+      ) : mode === 'WNBA' ? (
         <>
           <div className="rounded-2xl border border-cyan-500/25 bg-[#0d1322] p-5 space-y-4">
             <div className="flex items-start gap-3">
@@ -247,6 +288,35 @@ export const SimsView: React.FC<SimsViewProps> = ({ games }) => {
       )}
     </div>
   );
+};
+
+
+const ContextLearningPanel: React.FC<{ status: ContextLearningStatus | null; loading: boolean; onRefresh: () => void }> = ({ status, loading, onRefresh }) => {
+  const fmtImprovement = (v: number | null) => v === null ? '—' : `${v >= 0 ? '+' : ''}${(v * 100).toFixed(1)}%`;
+  return <div className="space-y-4">
+    <div className="rounded-2xl border border-violet-500/25 bg-[#0d1322] p-5 space-y-4">
+      <div className="flex flex-col lg:flex-row lg:items-start justify-between gap-4">
+        <div><div className="flex items-center gap-2"><FlaskConical className="h-5 w-5 text-violet-400" /><h3 className="font-bold text-white">Pregame → Postgame Context Learning V2</h3></div><p className="text-xs text-slate-400 mt-1">Totals-first shadow challengers now cover MLB, Soccer, WNBA, NFL and NCAAF. Apex freezes the first immutable pregame snapshot, grades only real finals, and reweights features chronologically so future outcomes cannot leak backward.</p></div>
+        <button onClick={onRefresh} disabled={loading} className="inline-flex items-center gap-2 rounded-lg border border-violet-500/40 bg-violet-500/15 px-4 py-2 text-sm font-bold text-violet-300 disabled:opacity-40">{loading ? <RefreshCw className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />}Refresh Evidence</button>
+      </div>
+      {!status ? <div className="text-sm text-slate-400">No context-learning evidence has been recorded yet. Scan supported pregame totals to freeze immutable snapshots; Apex grades them automatically after finals.</div> : <>
+        <div className="grid grid-cols-2 md:grid-cols-4 xl:grid-cols-8 gap-2">
+          <Metric label="Frozen Rows" value={`${status.totalFrozenPregameSnapshots}`} compact />
+          <Metric label="Unique Evidence" value={`${status.uniqueLearningSnapshots}`} compact />
+          <Metric label="Duplicates Blocked" value={`${status.duplicateLearningSnapshotsSuppressed}`} compact />
+          <Metric label="Graded Events" value={`${status.overall.gradedEvents}`} compact />
+          <Metric label="Base Total MAE" value={fmtNum(status.overall.baseTotalMae, 2)} compact />
+          <Metric label="Context MAE" value={fmtNum(status.overall.challengerTotalMae, 2)} compact />
+          <Metric label="MAE Gain" value={fmtImprovement(status.overall.improvementPct)} compact />
+          <Metric label="Promotion" value={status.overall.promotionStatus} compact />
+        </div>
+        <div className="grid grid-cols-1 lg:grid-cols-2 xl:grid-cols-3 gap-3">{status.bySport.map(row => <div key={row.sport} className="rounded-xl border border-slate-800 bg-slate-950/50 p-4"><div className="flex items-center justify-between gap-2"><div className="font-bold text-white">{row.sport} Totals Challenger</div><span className={`rounded px-2 py-1 text-[10px] font-bold ${row.promotionEligible ? 'bg-emerald-500/15 text-emerald-300' : row.promotionStatus === 'CHALLENGER_LEADING' ? 'bg-cyan-500/10 text-cyan-300' : 'bg-amber-500/10 text-amber-300'}`}>{row.promotionStatus}</span></div><div className="mt-3 grid grid-cols-2 gap-2"><Metric label="Games" value={`${row.gradedEvents}`} compact /><Metric label="Improved" value={row.improvementRate === null ? '—' : `${(row.improvementRate*100).toFixed(0)}%`} compact /><Metric label="MAE Gain" value={fmtImprovement(row.improvementPct)} compact /><Metric label="Recent Gain" value={fmtImprovement(row.recentImprovementPct)} compact /></div></div>)}</div>
+        {status.featureLeaderboard.length > 0 && <div className="rounded-xl border border-slate-800 bg-slate-950/50 p-4"><div className="flex items-center gap-2 text-sm font-black text-white"><BarChart3 className="h-4 w-4 text-violet-400"/> Learned feature evidence</div><div className="mt-3 grid gap-2 lg:grid-cols-2">{status.featureLeaderboard.slice(0,10).map(row => <div key={`${row.sport}-${row.key}`} className="flex items-center justify-between gap-3 rounded-lg border border-slate-800 bg-black/20 px-3 py-2 text-[10px]"><div><div className="font-bold text-slate-200">{row.sport} · {row.key.replaceAll('_',' ')}</div><div className="text-slate-500">{row.evidenceCount} graded · help {row.helpRate === null ? '—' : `${(row.helpRate*100).toFixed(0)}%`}</div></div><div className="text-right"><div className="font-black text-violet-300">{row.learnedMultiplier.toFixed(2)}x</div><div className="text-slate-500">gain {row.meanErrorGain === null ? '—' : row.meanErrorGain.toFixed(2)}</div></div></div>)}</div></div>}
+        <div className="rounded-lg border border-slate-800 bg-slate-950/50 p-3 text-xs text-slate-400">{status.policy}</div>
+      </>}
+    </div>
+    <div className="rounded-xl border border-slate-800 bg-slate-900/30 p-4 text-xs text-slate-400"><b className="text-slate-300">Feature policy:</b> MLB adds starter run prevention/K-BB/HR risk, bullpen workload, temperature, empirical venue scoring and verified interactions. Soccer uses xG, shots-on-target, keeper suppression and tactical proxies only where sourced. WNBA adds pace/efficiency and transition context. NFL/NCAAF add pace, red-zone, recent totals and wind; unsupported pressure data stays unavailable. All context remains shadow-only until evidence gates are met.</div>
+  </div>;
 };
 
 const SeasonInput: React.FC<{ label: string; value: number; onChange: (v: number) => void }> = ({ label, value, onChange }) => <div><label className="text-[10px] uppercase font-bold text-slate-500">{label}</label><input type="number" value={value} min={1997} max={2100} onChange={e => onChange(Number(e.target.value))} className="mt-1 w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-white" /></div>;

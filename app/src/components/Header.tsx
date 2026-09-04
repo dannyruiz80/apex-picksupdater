@@ -11,6 +11,9 @@ interface HeaderProps {
   onRefresh: () => void;
   isMobileDrawerOpen: boolean;
   setIsMobileDrawerOpen: (open: boolean) => void;
+  activeSport?: string;
+  slateDate?: string;
+  lastChecked?: Date | null;
 }
 
 export const Header: React.FC<HeaderProps> = ({
@@ -22,6 +25,9 @@ export const Header: React.FC<HeaderProps> = ({
   onRefresh,
   isMobileDrawerOpen,
   setIsMobileDrawerOpen,
+  activeSport = 'ALL',
+  slateDate,
+  lastChecked = null,
 }) => {
   const isOnline = health?.status === 'ok' && health?.app === 'Apex Picks';
 
@@ -61,6 +67,14 @@ export const Header: React.FC<HeaderProps> = ({
               </p>
             </div>
           </div>
+        </div>
+
+        <div className="hidden xl:flex items-center gap-2 rounded-xl border border-slate-800 bg-slate-950/70 px-3 py-2 text-[10px] font-mono text-slate-400">
+          <span><strong className="text-slate-200">SPORT</strong> {activeSport}</span>
+          <span className="text-slate-700">•</span>
+          <span><strong className="text-slate-200">SLATE</strong> {slateDate || '—'}</span>
+          <span className="text-slate-700">•</span>
+          <span><strong className="text-slate-200">DATA</strong> {lastChecked ? lastChecked.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : 'checking'}</span>
         </div>
 
         {/* Right: Engine Status & Actions */}

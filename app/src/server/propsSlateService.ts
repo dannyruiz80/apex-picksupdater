@@ -8,8 +8,9 @@ import {
 } from '../types';
 import { playerPropProvider } from './playerPropProvider';
 import { marketQuotaGuard } from './marketQuotaGuard';
+import { isCanonicalFootballScheduleDate } from './scheduleDateIdentity.js';
 
-const SPORT_ORDER: ApexSport[] = ['MLB', 'NFL', 'NBA', 'WNBA', 'NHL', 'SOCCER', 'TENNIS'];
+const SPORT_ORDER: ApexSport[] = ['MLB', 'NFL', 'NCAAF', 'NBA', 'WNBA', 'NHL', 'SOCCER', 'TENNIS'];
 
 function eventTime(game: NormalizedApexGame): number {
   const raw = game.startTime || game.scheduleDate;
@@ -25,11 +26,13 @@ export function selectPropSlateGames(
   games: NormalizedApexGame[],
   sportFilter: ApexSportFilter,
   maxEvents = 8,
+  selectedDate?: string,
 ): { selected: NormalizedApexGame[]; propCapableEvents: number; unsupportedSports: ApexSport[] } {
   const cap = Math.max(1, Math.min(12, Math.floor(maxEvents || 8)));
   const upcoming = games
     .filter((g) => g && g.eventId && g.status === 'UPCOMING')
     .filter((g) => sportFilter === 'ALL' || g.sport === sportFilter)
+    .filter((g) => !selectedDate || isCanonicalFootballScheduleDate(g.sport, g.startTime, selectedDate))
     .sort((a, b) => eventTime(a) - eventTime(b));
 
   const unsupportedSports = Array.from(new Set(
@@ -107,6 +110,7 @@ export async function scanPlayerPropSlate(params: {
     params.games,
     params.sportFilter,
     params.maxEvents ?? 8,
+    params.selectedDate,
   );
 
   if (selected.length === 0) {

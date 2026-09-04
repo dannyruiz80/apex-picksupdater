@@ -21,7 +21,7 @@ function fixtureModel(game: NormalizedApexGame, homeWin=0.53, shadowHome=0.535):
     modelVersion:'APEX_GAME_MARKET_V1', generatedAt:new Date().toISOString(), asOf:game.startTime, sport:'NBA', eventId:game.eventId,
     status:'AVAILABLE', reason:null, validationStatus:'EARLY_EVIDENCE', source:'ESPN_TEAM_SCHEDULE_HISTORY', pointInTimeValid:true, reliabilityTier:'STRONG',
     homeSampleCount:20, awaySampleCount:20, expectedHomeScore:108, expectedAwayScore:106, expectedMargin:2, expectedTotal:214, marginStdDev:11, totalStdDev:14,
-    homeWinProbability:homeWin, awayWinProbability:1-homeWin, drawProbability:null, homeHistory:h, awayHistory:a, contextV2:null,
+    homeWinProbability:homeWin, awayWinProbability:1-homeWin, drawProbability:null, homeHistory:h, awayHistory:a, contextV2:null, contextChallengerV2:null,
     shadowModelVersion:'APEX_GAME_MARKET_V2_SHADOW', shadowExpectedHomeScore:108.2, shadowExpectedAwayScore:105.8, shadowExpectedMargin:2.4,
     shadowExpectedTotal:214, shadowHomeWinProbability:shadowHome, shadowAwayWinProbability:1-shadowHome, notes:[],
   };

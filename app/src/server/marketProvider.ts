@@ -188,6 +188,8 @@ export class MarketProviderService {
         return ['baseball_mlb'];
       case 'NFL':
         return ['americanfootball_nfl'];
+      case 'NCAAF':
+        return ['americanfootball_ncaaf'];
       case 'NBA':
         return ['basketball_nba'];
       case 'WNBA':

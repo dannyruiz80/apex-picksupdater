@@ -11,6 +11,7 @@ import {
 } from "./src/server/sportsHub.js";
 import { mlbAuditState } from "./src/server/mlbAdapter.js";
 import { nflAuditState } from "./src/server/nflAdapter.js";
+import { ncaafAuditState } from "./src/server/ncaafAdapter.js";
 import { nbaAuditState } from "./src/server/nbaAdapter.js";
 import { wnbaAuditState } from "./src/server/wnbaAdapter.js";
 import { nhlAuditState } from "./src/server/nhlAdapter.js";
@@ -78,7 +79,7 @@ async function startServer() {
   app.get("/api/version", (_req, res) => {
     res.status(200).json({
       version: APP_VERSION,
-      build: "props-slate-first-v1-14-3",
+      build: "context-learning-v2-decision-ux-v1-16-0",
       environment: process.env.NODE_ENV || "development",
       timestamp: new Date().toISOString(),
     });
@@ -186,7 +187,8 @@ async function startServer() {
     const sportRaw = String(req.body?.sport || 'ALL').toUpperCase();
     const sport = VALID_SPORTS.has(sportRaw) ? (sportRaw as ApexSportFilter) : 'ALL';
     const date = String(req.body?.date || '');
-    const maxGames = Math.max(1, Math.min(48, Number(req.body?.maxGames || (sport === 'ALL' ? 48 : sport === 'TENNIS' ? 30 : 12))));
+    const defaultMax = sport === 'ALL' ? 48 : sport === 'TENNIS' ? 30 : sport === 'NFL' ? 20 : sport === 'NCAAF' ? 24 : 20;
+    const maxGames = Math.max(1, Math.min(48, Number(req.body?.maxGames || defaultMax)));
     if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) {
       return res.status(400).json({ status: 'ERROR', message: 'date must be YYYY-MM-DD', picks: [] });
     }
@@ -241,6 +243,10 @@ async function startServer() {
 
   app.get("/api/ml/game-markets/v1/calibration", (_req, res) => {
     res.status(200).json(gameMarketPredictionRepository.getCalibrationDashboard());
+  });
+
+  app.get("/api/ml/context-learning/status", (_req, res) => {
+    res.status(200).json(gameMarketPredictionRepository.getContextLearningStatus());
   });
 
   app.get("/api/ml/game-markets/v1/calibration/verify", (_req, res) => {
@@ -1291,6 +1297,9 @@ async function startServer() {
   });
   app.get("/api/audit/nfl", (_req, res) => {
     res.status(200).json(nflAuditState);
+  });
+  app.get("/api/audit/ncaaf", (_req, res) => {
+    res.status(200).json(ncaafAuditState);
   });
   app.get("/api/audit/nba", (_req, res) => {
     res.status(200).json(nbaAuditState);

@@ -11,13 +11,20 @@ interface ParlaysViewProps {
 }
 
 const SPORTS: Array<{ id: ApexSportFilter; label: string }> = [
-  { id: 'ALL', label: 'All' }, { id: 'MLB', label: 'MLB' }, { id: 'NFL', label: 'NFL' },
+  { id: 'ALL', label: 'All' }, { id: 'MLB', label: 'MLB' }, { id: 'NFL', label: 'NFL' }, { id: 'NCAAF', label: 'NCAAF' },
   { id: 'NBA', label: 'NBA' }, { id: 'WNBA', label: 'WNBA' }, { id: 'NHL', label: 'NHL' },
   { id: 'SOCCER', label: 'Soccer' },
 ];
 function american(v:number){return v>0?`+${v}`:`${v}`;}
 function pct(v:number){return `${(v*100).toFixed(1)}%`;}
 function money(v:number|null|undefined){return v==null?'—':new Intl.NumberFormat('en-US',{style:'currency',currency:'USD'}).format(v);}
+function reviewExplanation(ticket: ParlayTicket): string {
+  const reasons = (ticket.reasons || []).join(' ').toUpperCase();
+  if (reasons.includes('CORRELATION') || reasons.includes('UNMODELED')) return 'Review only: joint-leg correlation is not validated. The displayed probability and EV use an independence baseline, so Apex will not auto-qualify this ticket.';
+  if (reasons.includes('VALUE') || reasons.includes('EV')) return 'Review only: the combination does not clear the ticket-level value gate even though the individual legs remain production-qualified.';
+  if (reasons.includes('SPORTSBOOK') || reasons.includes('COMMON_BOOK')) return 'Review only: the legs do not currently resolve to one fully executable sportsbook ticket.';
+  return 'Review only: one or more ticket-level integrity gates remain unresolved. Apex preserves the combination for inspection but will not label it a qualified parlay.';
+}
 
 const TicketCard:React.FC<{ticket:ParlayTicket;review?:boolean;onGoToMyBets:()=>void}>=({ticket,review=false,onGoToMyBets})=>{
   const [tracking,setTracking]=useState(false);
@@ -59,6 +66,7 @@ const TicketCard:React.FC<{ticket:ParlayTicket;review?:boolean;onGoToMyBets:()=>
         <div className="flex items-start justify-between gap-3"><div><div className="text-sm font-extrabold text-white">{i+1}. {leg.displayPick}</div><div className="text-[10px] text-slate-500">{leg.eventTitle} · {leg.pickType==='GAME_MARKET'?(leg.gameMarketType||'GAME'):'PROP'}</div></div><div className="text-right"><div className="font-black text-cyan-300">{pct(leg.probability)}</div><div className="text-[10px] text-slate-500">{american(leg.oddsAmerican)}</div></div></div>
       </div>)}
     </div>
+    {review && <div className="mt-4 rounded-lg border border-amber-500/25 bg-amber-950/15 px-3 py-2 text-xs font-semibold text-amber-100">{reviewExplanation(ticket)}</div>}
     <div className="mt-4 rounded-lg border border-cyan-500/20 bg-cyan-950/10 px-3 py-2 text-[10px] text-cyan-100">{ticket.correlationNote}</div>
     <div className="mt-3 flex flex-wrap items-center justify-between gap-3"><div className="text-[10px] text-slate-500">{ticket.reasons.join(' · ').replaceAll('_',' ')}</div>{!review&&<button onClick={track} disabled={tracking||blocked} className="inline-flex items-center gap-2 rounded-lg border border-emerald-500/30 bg-emerald-500/10 px-3 py-2 text-[10px] font-black text-emerald-300 disabled:opacity-40"><WalletCards className="h-3.5 w-3.5"/>{tracking?'Tracking…':stake?.configured?'Track This Bet':'Set Bankroll / Track'}</button>}</div>
     {trackMessage&&<div className="mt-3 rounded-lg border border-slate-700 bg-black/20 px-3 py-2 text-[10px] text-slate-300">{trackMessage}</div>}

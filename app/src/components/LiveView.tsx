@@ -33,6 +33,7 @@ const SPORT_FILTERS: Array<{ id: ApexSportFilter; label: string }> = [
   { id: 'ALL', label: 'All Sports' },
   { id: 'MLB', label: 'MLB' },
   { id: 'NFL', label: 'NFL' },
+  { id: 'NCAAF', label: 'NCAAF' },
   { id: 'NBA', label: 'NBA' },
   { id: 'WNBA', label: 'WNBA' },
   { id: 'NHL', label: 'NHL' },
@@ -90,7 +91,7 @@ export const LiveView: React.FC<LiveViewProps> = ({
       return null;
     }
 
-    if (game.sport === 'NFL' || game.sport === 'NBA' || game.sport === 'WNBA') {
+    if (game.sport === 'NFL' || game.sport === 'NCAAF' || game.sport === 'NBA' || game.sport === 'WNBA') {
       if (game.period !== null && game.period !== undefined) {
         const q = game.period > 4 ? `OT${game.period - 4 > 1 ? game.period - 4 : ''}` : `Q${game.period}`;
         return game.displayClock ? `${q} (${game.displayClock})` : q;
@@ -116,7 +117,7 @@ export const LiveView: React.FC<LiveViewProps> = ({
             </span>
           </div>
           <p className="text-xs sm:text-sm text-slate-400 mt-1">
-            Real-time live scoreboard synchronizer across MLB, NFL, NBA, WNBA, NHL, Soccer, and ATP / WTA Tennis
+            Real-time live scoreboard synchronizer across MLB, NFL, NCAAF, NBA, WNBA, NHL, Soccer, and ATP / WTA Tennis
           </p>
         </div>
 

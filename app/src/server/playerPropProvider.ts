@@ -19,6 +19,7 @@ import { probabilityModelService } from './probabilityModelService';
 import { mlbPitcherKContextService } from './mlbPitcherKContextService';
 import { valueEngineService } from './valueEngineService';
 import { backtestEngineService } from './backtestEngineService';
+import { footballProviderEventDateMatches, requiresStrictFootballDateIdentity } from './scheduleDateIdentity.js';
 
 const ODDS_API_BASE = 'https://api.the-odds-api.com/v4';
 
@@ -84,6 +85,7 @@ class PlayerPropProviderService {
     bySport: {
       MLB: { propRequests: 0, quotesReceived: 0, acceptedQuotes: 0, rejectedQuotes: 0, playersResolved: 0 },
       NFL: { propRequests: 0, quotesReceived: 0, acceptedQuotes: 0, rejectedQuotes: 0, playersResolved: 0 },
+      NCAAF: { propRequests: 0, quotesReceived: 0, acceptedQuotes: 0, rejectedQuotes: 0, playersResolved: 0 },
       NBA: { propRequests: 0, quotesReceived: 0, acceptedQuotes: 0, rejectedQuotes: 0, playersResolved: 0 },
       WNBA: { propRequests: 0, quotesReceived: 0, acceptedQuotes: 0, rejectedQuotes: 0, playersResolved: 0 },
       NHL: { propRequests: 0, quotesReceived: 0, acceptedQuotes: 0, rejectedQuotes: 0, playersResolved: 0 },
@@ -157,6 +159,10 @@ class PlayerPropProviderService {
           'player_receptions',
           'player_anytime_td',
         ];
+      case 'NCAAF':
+        // v1.14.9 intentionally enables NCAAF game markets only. Player props remain fail-closed
+        // until roster/stat provenance is independently verified for college football.
+        return [];
       case 'NBA':
       case 'WNBA':
         return [
@@ -309,7 +315,28 @@ class PlayerPropProviderService {
       };
     }
 
-    const providerEventId = matchResult.providerEvent.id;
+    const providerEvent = matchResult.providerEvent;
+    if (requiresStrictFootballDateIdentity(sport)) {
+      const dateMatches = footballProviderEventDateMatches(
+        sport, apexGame.startTime, providerEvent.commence_time, apexGame.scheduleDate,
+      );
+      const providerStartMs = Date.parse(providerEvent.commence_time);
+      if (!dateMatches || !Number.isFinite(providerStartMs) || providerStartMs <= Date.now()) {
+        return {
+          apexEventId: apexGame.eventId,
+          status: 'NO_PROPS',
+          message: !dateMatches
+            ? 'Provider prop event failed strict football slate-date identity verification.'
+            : 'Provider prop event is no longer a verified future pregame event.',
+          propsCount: 0,
+          props: [],
+          rejectionsCount: 0,
+          quotaState: marketQuotaGuard.getQuotaState(),
+        };
+      }
+    }
+
+    const providerEventId = providerEvent.id;
     const marketsToQuery = customMarketKeys || this.getPropMarketKeysForSport(sport);
 
     if (marketsToQuery.length === 0) {

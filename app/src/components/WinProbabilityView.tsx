@@ -27,7 +27,7 @@ interface WinProbabilityViewProps {
 const SPORTS: Array<{ id: ApexSportFilter; label: string }> = [
   { id: 'ALL', label: 'All' },
   { id: 'MLB', label: 'MLB' },
-  { id: 'NFL', label: 'NFL' },
+  { id: 'NFL', label: 'NFL' }, { id: 'NCAAF', label: 'NCAAF' },
   { id: 'NBA', label: 'NBA' },
   { id: 'WNBA', label: 'WNBA' },
   { id: 'NHL', label: 'NHL' },

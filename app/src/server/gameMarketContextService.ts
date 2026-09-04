@@ -1,5 +1,5 @@
 import { NormalizedApexGame } from '../types.js';
-import { TeamHistorySummary } from './gameTeamHistoryService.js';
+import { TeamHistorySummary, resolveSoccerLeagueCode } from './gameTeamHistoryService.js';
 
 export interface MlbStarterContextV2 {
   gamePk: number | null;
@@ -11,6 +11,12 @@ export interface MlbStarterContextV2 {
   awayStarterEra: number | null;
   homeStarterWhip: number | null;
   awayStarterWhip: number | null;
+  homeStarterK9: number | null;
+  awayStarterK9: number | null;
+  homeStarterBb9: number | null;
+  awayStarterBb9: number | null;
+  homeStarterHr9: number | null;
+  awayStarterHr9: number | null;
   temperatureF: number | null;
   windMph: number | null;
   weatherCondition: string | null;
@@ -19,9 +25,34 @@ export interface MlbStarterContextV2 {
   awayLineupCount: number | null;
   homeBullpenInningsLast3: number | null;
   awayBullpenInningsLast3: number | null;
+  starterTotalRunSignal: number | null;
+  bullpenTotalRunSignal: number | null;
+  weatherTotalRunSignal: number | null;
+  empiricalVenueRunFactor: number | null;
 }
 
 
+export interface SoccerChanceContextV1 {
+  leagueCode: string | null;
+  homeRecent5XgFor: number | null;
+  homeRecent5XgAgainst: number | null;
+  awayRecent5XgFor: number | null;
+  awayRecent5XgAgainst: number | null;
+  homeRecent5ShotsOnTargetFor: number | null;
+  homeRecent5ShotsOnTargetAgainst: number | null;
+  awayRecent5ShotsOnTargetFor: number | null;
+  awayRecent5ShotsOnTargetAgainst: number | null;
+  homeRecent5ShotsFor: number | null;
+  homeRecent5ShotsAgainst: number | null;
+  awayRecent5ShotsFor: number | null;
+  awayRecent5ShotsAgainst: number | null;
+  homeRecent5PossessionPct: number | null;
+  awayRecent5PossessionPct: number | null;
+  homeKeeperXgSuppression: number | null;
+  awayKeeperXgSuppression: number | null;
+  chanceSampleCountHome: number;
+  chanceSampleCountAway: number;
+}
 
 export interface NflStrengthContextV2 {
   homeStrengthIndex: number | null;
@@ -34,6 +65,15 @@ export interface NflStrengthContextV2 {
   awayNetYardsPerPlay: number | null;
   homeTurnoverMarginPerGame: number | null;
   awayTurnoverMarginPerGame: number | null;
+  homeRecent5Total: number | null;
+  awayRecent5Total: number | null;
+  homeOffensivePlaysPerGame: number | null;
+  awayOffensivePlaysPerGame: number | null;
+  homeRedZoneTdRate: number | null;
+  awayRedZoneTdRate: number | null;
+  temperatureF: number | null;
+  windMph: number | null;
+  weatherCondition: string | null;
 }
 
 
@@ -53,6 +93,14 @@ export interface WnbaProductionContextV1 {
   awayBackToBack: boolean | null;
   homeVenueSampleCount: number;
   awayVenueSampleCount: number;
+  homeEstimatedPossessions: number | null;
+  awayEstimatedPossessions: number | null;
+  homeOffensiveRating: number | null;
+  awayOffensiveRating: number | null;
+  homeDefensiveRating: number | null;
+  awayDefensiveRating: number | null;
+  homeFastBreakPoints: number | null;
+  awayFastBreakPoints: number | null;
 }
 
 export interface GameMarketContextV2 {
@@ -67,7 +115,9 @@ export interface GameMarketContextV2 {
   awayRestDays: number | null;
   mlb: MlbStarterContextV2 | null;
   nfl: NflStrengthContextV2 | null;
+  ncaaf: NflStrengthContextV2 | null;
   wnba: WnbaProductionContextV1 | null;
+  soccer: SoccerChanceContextV1 | null;
   notes: string[];
 }
 
@@ -138,12 +188,17 @@ function seasonStart(iso: string): string {
   return `${y}-01-01`;
 }
 
-async function pitcherRateStats(playerId: number | null, eventStart: string): Promise<{ era: number | null; whip: number | null }> {
-  if (!playerId) return { era: null, whip: null };
+async function pitcherRateStats(playerId: number | null, eventStart: string): Promise<{ era: number | null; whip: number | null; k9: number | null; bb9: number | null; hr9: number | null }> {
+  if (!playerId) return { era: null, whip: null, k9: null, bb9: null, hr9: null };
   const endDate = previousDate(eventStart);
   const raw = await fetchJson(`${MLB_API}/people/${playerId}/stats?stats=byDateRange&group=pitching&startDate=${seasonStart(eventStart)}&endDate=${endDate}`);
   const stat = raw?.stats?.[0]?.splits?.[0]?.stat ?? null;
-  return { era: finite(stat?.era), whip: finite(stat?.whip) };
+  return {
+    era: finite(stat?.era), whip: finite(stat?.whip),
+    k9: finite(stat?.strikeoutsPer9Inn ?? stat?.strikeoutsPer9),
+    bb9: finite(stat?.walksPer9Inn ?? stat?.walksPer9),
+    hr9: finite(stat?.homeRunsPer9 ?? stat?.homeRunsPer9Inn),
+  };
 }
 
 function parseWind(wind: unknown): number | null {
@@ -207,12 +262,14 @@ function statValue(stats: any[], names: string[]): number | null {
   return null;
 }
 
-async function nflEfficiency(summary: TeamHistorySummary): Promise<{ netYpp: number | null; turnoverMargin: number | null }> {
+async function footballEfficiency(summary: TeamHistorySummary, sport: 'NFL' | 'NCAAF'): Promise<{
+  netYpp: number | null; turnoverMargin: number | null; offensivePlays: number | null; redZoneTdRate: number | null;
+}> {
   const rows = summary.records.slice(0, 5);
-  const netYpp: number[] = [];
-  const turnoverMargins: number[] = [];
+  const netYpp: number[] = [], turnoverMargins: number[] = [], offensivePlays: number[] = [], redZoneRates: number[] = [];
+  const leaguePath = sport === 'NFL' ? 'nfl' : 'college-football';
   for (const row of rows) {
-    const raw = await fetchJson(`https://site.api.espn.com/apis/site/v2/sports/football/nfl/summary?event=${encodeURIComponent(row.eventId)}`, 30 * 60 * 1000);
+    const raw = await fetchJson(`https://site.api.espn.com/apis/site/v2/sports/football/${leaguePath}/summary?event=${encodeURIComponent(row.eventId)}`, 30 * 60 * 1000);
     const teams = Array.isArray(raw?.boxscore?.teams) ? raw.boxscore.teams : [];
     const mine = teams.find((t: any) => String(t?.team?.id ?? '') === String(summary.teamId));
     const opp = teams.find((t: any) => t !== mine);
@@ -223,11 +280,116 @@ async function nflEfficiency(summary: TeamHistorySummary): Promise<{ netYpp: num
     const myTo = statValue(mine.statistics, ['turnovers', 'totalTurnovers']);
     const oppTo = statValue(opp.statistics, ['turnovers', 'totalTurnovers']);
     if (myTo !== null && oppTo !== null) turnoverMargins.push(oppTo - myTo);
+    const plays = statValue(mine.statistics, ['totalPlays', 'offensivePlays', 'plays']);
+    if (plays !== null && plays > 0) offensivePlays.push(plays);
+    for (const st of mine.statistics || []) {
+      const key = String(st?.name ?? st?.label ?? st?.abbreviation ?? '').toLowerCase().replace(/[^a-z0-9]/g, '');
+      if (!['redzoneattempts','redzoneefficiency','redzone'].includes(key)) continue;
+      const text = String(st?.displayValue ?? st?.value ?? '');
+      const m = text.match(/(\d+(?:\.\d+)?)\s*[-/]\s*(\d+(?:\.\d+)?)/);
+      if (m && Number(m[2]) > 0) redZoneRates.push(Number(m[1]) / Number(m[2]));
+      else {
+        const n = Number(text.replace('%',''));
+        if (Number.isFinite(n)) redZoneRates.push(n > 1 ? n / 100 : n);
+      }
+      break;
+    }
   }
-  return { netYpp: mean(netYpp), turnoverMargin: mean(turnoverMargins) };
+  return { netYpp: mean(netYpp), turnoverMargin: mean(turnoverMargins), offensivePlays: mean(offensivePlays), redZoneTdRate: mean(redZoneRates) };
 }
 
-async function getMlbContext(game: NormalizedApexGame): Promise<MlbStarterContextV2> {
+async function footballPregameWeather(game: NormalizedApexGame, sport: 'NFL' | 'NCAAF'): Promise<{ temperatureF: number | null; windMph: number | null; weatherCondition: string | null }> {
+  if (!game.eventId || Date.now() >= Date.parse(game.startTime)) return { temperatureF: null, windMph: null, weatherCondition: null };
+  const leaguePath = sport === 'NFL' ? 'nfl' : 'college-football';
+  const raw = await fetchJson(`https://site.api.espn.com/apis/site/v2/sports/football/${leaguePath}/summary?event=${encodeURIComponent(game.eventId)}`, 5 * 60 * 1000);
+  const comp = raw?.header?.competitions?.[0] ?? raw?.gameInfo ?? {};
+  const weather = comp?.weather ?? raw?.gameInfo?.weather ?? {};
+  const temperatureF = finite(weather?.temperature ?? weather?.temperatureF ?? weather?.temp);
+  const windMph = finite(weather?.windSpeed ?? weather?.windMph) ?? parseWind(weather?.displayValue ?? weather?.wind);
+  const weatherCondition = weather?.displayValue ? String(weather.displayValue) : weather?.condition ? String(weather.condition) : null;
+  return { temperatureF, windMph, weatherCondition };
+}
+
+
+function soccerStat(stats: any[], names: string[]): number | null {
+  const targets = names.map((x) => x.toLowerCase().replace(/[^a-z0-9]/g, ''));
+  for (const st of stats || []) {
+    const key = String(st?.name ?? st?.label ?? st?.abbreviation ?? '').toLowerCase().replace(/[^a-z0-9]/g, '');
+    if (!targets.includes(key)) continue;
+    const n = Number(String(st?.value ?? st?.displayValue ?? '').replace(/[^0-9.-]/g, ''));
+    if (Number.isFinite(n)) return n;
+  }
+  return null;
+}
+
+async function recentSoccerChanceForTeam(summary: TeamHistorySummary, leagueCode: string): Promise<{
+  xgFor: number | null; xgAgainst: number | null; sotFor: number | null; sotAgainst: number | null;
+  shotsFor: number | null; shotsAgainst: number | null; possessionPct: number | null; keeperXgSuppression: number | null; sampleCount: number;
+}> {
+  const xgFor: number[] = [], xgAgainst: number[] = [], sotFor: number[] = [], sotAgainst: number[] = [];
+  const shotsFor: number[] = [], shotsAgainst: number[] = [], possession: number[] = [], keeperSuppression: number[] = [];
+  let sampleCount = 0;
+  for (const row of summary.records.slice(0, 5)) {
+    const raw = await fetchJson(`https://site.api.espn.com/apis/site/v2/sports/soccer/${leagueCode}/summary?event=${encodeURIComponent(row.eventId)}`, 30 * 60 * 1000);
+    const teams = Array.isArray(raw?.boxscore?.teams) ? raw.boxscore.teams : [];
+    const mine = teams.find((t: any) => String(t?.team?.id ?? '') === String(summary.teamId));
+    const opp = teams.find((t: any) => t !== mine);
+    if (!mine || !opp) continue;
+    sampleCount++;
+    const myXg = soccerStat(mine.statistics, ['expectedGoals', 'expectedgoals', 'xg']);
+    const oppXg = soccerStat(opp.statistics, ['expectedGoals', 'expectedgoals', 'xg']);
+    const mySot = soccerStat(mine.statistics, ['shotsOnGoal', 'shotsOnTarget', 'shotsongoal', 'shotsontarget']);
+    const oppSot = soccerStat(opp.statistics, ['shotsOnGoal', 'shotsOnTarget', 'shotsongoal', 'shotsontarget']);
+    const myShots = soccerStat(mine.statistics, ['totalShots', 'shots', 'shotAttempts']);
+    const oppShots = soccerStat(opp.statistics, ['totalShots', 'shots', 'shotAttempts']);
+    const poss = soccerStat(mine.statistics, ['possessionPct', 'possessionPercentage', 'possession']);
+    if (myXg !== null) xgFor.push(myXg);
+    if (oppXg !== null) { xgAgainst.push(oppXg); keeperSuppression.push(oppXg - row.pointsAgainst); }
+    if (mySot !== null) sotFor.push(mySot);
+    if (oppSot !== null) sotAgainst.push(oppSot);
+    if (myShots !== null) shotsFor.push(myShots);
+    if (oppShots !== null) shotsAgainst.push(oppShots);
+    if (poss !== null) possession.push(poss > 1 ? poss / 100 : poss);
+  }
+  return {
+    xgFor: mean(xgFor), xgAgainst: mean(xgAgainst), sotFor: mean(sotFor), sotAgainst: mean(sotAgainst),
+    shotsFor: mean(shotsFor), shotsAgainst: mean(shotsAgainst), possessionPct: mean(possession),
+    keeperXgSuppression: mean(keeperSuppression), sampleCount,
+  };
+}
+
+
+async function getSoccerContext(game: NormalizedApexGame, home: TeamHistorySummary, away: TeamHistorySummary): Promise<SoccerChanceContextV1 | null> {
+  const leagueCode = resolveSoccerLeagueCode(game);
+  if (!leagueCode) return null;
+  const [h, a] = await Promise.all([
+    recentSoccerChanceForTeam(home, leagueCode),
+    recentSoccerChanceForTeam(away, leagueCode),
+  ]);
+  return {
+    leagueCode,
+    homeRecent5XgFor: h.xgFor,
+    homeRecent5XgAgainst: h.xgAgainst,
+    awayRecent5XgFor: a.xgFor,
+    awayRecent5XgAgainst: a.xgAgainst,
+    homeRecent5ShotsOnTargetFor: h.sotFor,
+    homeRecent5ShotsOnTargetAgainst: h.sotAgainst,
+    awayRecent5ShotsOnTargetFor: a.sotFor,
+    awayRecent5ShotsOnTargetAgainst: a.sotAgainst,
+    homeRecent5ShotsFor: h.shotsFor,
+    homeRecent5ShotsAgainst: h.shotsAgainst,
+    awayRecent5ShotsFor: a.shotsFor,
+    awayRecent5ShotsAgainst: a.shotsAgainst,
+    homeRecent5PossessionPct: h.possessionPct,
+    awayRecent5PossessionPct: a.possessionPct,
+    homeKeeperXgSuppression: h.keeperXgSuppression,
+    awayKeeperXgSuppression: a.keeperXgSuppression,
+    chanceSampleCountHome: h.sampleCount,
+    chanceSampleCountAway: a.sampleCount,
+  };
+}
+
+async function getMlbContext(game: NormalizedApexGame, homeHistory: TeamHistorySummary): Promise<MlbStarterContextV2> {
   const date = game.startTime.slice(0, 10);
   const schedule = await fetchJson(`${MLB_API}/schedule?sportId=1&date=${encodeURIComponent(date)}&hydrate=probablePitcher,venue`, 5 * 60 * 1000);
   const games = schedule?.dates?.flatMap((d: any) => d.games ?? []) ?? [];
@@ -277,6 +439,12 @@ async function getMlbContext(game: NormalizedApexGame): Promise<MlbStarterContex
     awayStarterEra: awayStats.era,
     homeStarterWhip: homeStats.whip,
     awayStarterWhip: awayStats.whip,
+    homeStarterK9: homeStats.k9,
+    awayStarterK9: awayStats.k9,
+    homeStarterBb9: homeStats.bb9,
+    awayStarterBb9: awayStats.bb9,
+    homeStarterHr9: homeStats.hr9,
+    awayStarterHr9: awayStats.hr9,
     temperatureF,
     windMph,
     weatherCondition,
@@ -285,50 +453,96 @@ async function getMlbContext(game: NormalizedApexGame): Promise<MlbStarterContex
     awayLineupCount,
     homeBullpenInningsLast3,
     awayBullpenInningsLast3,
+    starterTotalRunSignal: (() => {
+      const eras = [homeStats.era, awayStats.era].filter((v): v is number => v !== null && Number.isFinite(v));
+      const whips = [homeStats.whip, awayStats.whip].filter((v): v is number => v !== null && Number.isFinite(v));
+      if (!eras.length && !whips.length) return null;
+      const eraPart = eras.length ? Math.max(-0.75, Math.min(0.75, ((mean(eras) ?? 4.25) - 4.25) * 0.30)) : 0;
+      const whipPart = whips.length ? Math.max(-0.45, Math.min(0.45, ((mean(whips) ?? 1.28) - 1.28) * 1.00)) : 0;
+      return Number((eraPart + whipPart).toFixed(3));
+    })(),
+    bullpenTotalRunSignal: (() => {
+      const vals = [homeBullpenInningsLast3, awayBullpenInningsLast3].filter((v): v is number => v !== null && Number.isFinite(v));
+      if (!vals.length) return null;
+      return Number(Math.max(-0.25, Math.min(0.45, ((mean(vals) ?? 9) - 9) * 0.05)).toFixed(3));
+    })(),
+    weatherTotalRunSignal: temperatureF === null ? null : Number(Math.max(-0.40, Math.min(0.40, (temperatureF - 70) * 0.02)).toFixed(3)),
+    empiricalVenueRunFactor: (() => {
+      const venueTotal = homeHistory.venuePointsFor !== null && homeHistory.venuePointsAgainst !== null
+        ? homeHistory.venuePointsFor + homeHistory.venuePointsAgainst : null;
+      const overall = homeHistory.weightedTotal;
+      if (venueTotal === null || overall === null || overall <= 0 || homeHistory.venueSampleCount < 4) return null;
+      return Number(Math.max(0.85, Math.min(1.15, venueTotal / overall)).toFixed(3));
+    })(),
   };
 }
 
-async function buildNflContext(home: TeamHistorySummary, away: TeamHistorySummary, eventStart: string): Promise<NflStrengthContextV2> {
+async function buildFootballContext(game: NormalizedApexGame, home: TeamHistorySummary, away: TeamHistorySummary, sport: 'NFL' | 'NCAAF'): Promise<NflStrengthContextV2> {
   const homeRecent5Margin = recentMean(home, 'margin');
   const awayRecent5Margin = recentMean(away, 'margin');
   const homeTrend = homeRecent5Margin !== null && home.weightedMargin !== null ? homeRecent5Margin - home.weightedMargin : 0;
   const awayTrend = awayRecent5Margin !== null && away.weightedMargin !== null ? awayRecent5Margin - away.weightedMargin : 0;
-  const [homeEff, awayEff] = await Promise.all([nflEfficiency(home), nflEfficiency(away)]);
+  const [homeEff, awayEff, weather] = await Promise.all([footballEfficiency(home, sport), footballEfficiency(away, sport), footballPregameWeather(game, sport)]);
   return {
     homeStrengthIndex: home.weightedMargin === null ? null : home.weightedMargin + 0.25 * homeTrend,
     awayStrengthIndex: away.weightedMargin === null ? null : away.weightedMargin + 0.25 * awayTrend,
-    homeRecent5Margin,
-    awayRecent5Margin,
-    homeRestDays: restDays(home, eventStart),
-    awayRestDays: restDays(away, eventStart),
-    homeNetYardsPerPlay: homeEff.netYpp,
-    awayNetYardsPerPlay: awayEff.netYpp,
-    homeTurnoverMarginPerGame: homeEff.turnoverMargin,
-    awayTurnoverMarginPerGame: awayEff.turnoverMargin,
+    homeRecent5Margin, awayRecent5Margin,
+    homeRestDays: restDays(home, game.startTime), awayRestDays: restDays(away, game.startTime),
+    homeNetYardsPerPlay: homeEff.netYpp, awayNetYardsPerPlay: awayEff.netYpp,
+    homeTurnoverMarginPerGame: homeEff.turnoverMargin, awayTurnoverMarginPerGame: awayEff.turnoverMargin,
+    homeRecent5Total: recentMean(home, 'total', 5), awayRecent5Total: recentMean(away, 'total', 5),
+    homeOffensivePlaysPerGame: homeEff.offensivePlays, awayOffensivePlaysPerGame: awayEff.offensivePlays,
+    homeRedZoneTdRate: homeEff.redZoneTdRate, awayRedZoneTdRate: awayEff.redZoneTdRate,
+    temperatureF: weather.temperatureF, windMph: weather.windMph, weatherCondition: weather.weatherCondition,
   };
 }
 
+async function basketballEfficiency(summary: TeamHistorySummary): Promise<{ possessions: number | null; offensiveRating: number | null; defensiveRating: number | null; fastBreakPoints: number | null }> {
+  const poss: number[] = [], ortg: number[] = [], drtg: number[] = [], fast: number[] = [];
+  for (const row of summary.records.slice(0, 5)) {
+    const raw = await fetchJson(`https://site.api.espn.com/apis/site/v2/sports/basketball/wnba/summary?event=${encodeURIComponent(row.eventId)}`, 30 * 60 * 1000);
+    const teams = Array.isArray(raw?.boxscore?.teams) ? raw.boxscore.teams : [];
+    const mine = teams.find((t: any) => String(t?.team?.id ?? '') === String(summary.teamId));
+    const opp = teams.find((t: any) => t !== mine);
+    if (!mine || !opp) continue;
+    const fga = statValue(mine.statistics, ['fieldGoalAttempts','fieldGoalsAttempted','fga']);
+    const orb = statValue(mine.statistics, ['offensiveRebounds','offRebounds','oreb']);
+    const tov = statValue(mine.statistics, ['turnovers','totalTurnovers']);
+    const fta = statValue(mine.statistics, ['freeThrowAttempts','freeThrowsAttempted','fta']);
+    const ofga = statValue(opp.statistics, ['fieldGoalAttempts','fieldGoalsAttempted','fga']);
+    const oorb = statValue(opp.statistics, ['offensiveRebounds','offRebounds','oreb']);
+    const otov = statValue(opp.statistics, ['turnovers','totalTurnovers']);
+    const ofta = statValue(opp.statistics, ['freeThrowAttempts','freeThrowsAttempted','fta']);
+    if ([fga,orb,tov,fta,ofga,oorb,otov,ofta].every(v=>v!==null)) {
+      const myPoss = fga! - orb! + tov! + 0.44 * fta!;
+      const oppPoss = ofga! - oorb! + otov! + 0.44 * ofta!;
+      const p = (myPoss + oppPoss) / 2;
+      if (p > 0) { poss.push(p); ortg.push(row.pointsFor / p * 100); drtg.push(row.pointsAgainst / p * 100); }
+    }
+    const fb = statValue(mine.statistics, ['fastBreakPoints','fastbreakpoints','pointsFastBreak']);
+    if (fb !== null) fast.push(fb);
+  }
+  return { possessions: mean(poss), offensiveRating: mean(ortg), defensiveRating: mean(drtg), fastBreakPoints: mean(fast) };
+}
 
-function buildWnbaContext(home: TeamHistorySummary, away: TeamHistorySummary, eventStart: string): WnbaProductionContextV1 {
-  const hr = restDays(home, eventStart);
-  const ar = restDays(away, eventStart);
+
+async function buildWnbaContext(home: TeamHistorySummary, away: TeamHistorySummary, eventStart: string): Promise<WnbaProductionContextV1> {
+  const hr = restDays(home, eventStart), ar = restDays(away, eventStart);
+  const [homeAdv, awayAdv] = await Promise.all([basketballEfficiency(home), basketballEfficiency(away)]);
   return {
-    homeRecent5Margin: recentMean(home, 'margin', 5),
-    awayRecent5Margin: recentMean(away, 'margin', 5),
-    homeRecent10Margin: recentMean(home, 'margin', 10),
-    awayRecent10Margin: recentMean(away, 'margin', 10),
-    homeRecent5Total: recentMean(home, 'total', 5),
-    awayRecent5Total: recentMean(away, 'total', 5),
-    homeRecent10Total: recentMean(home, 'total', 10),
-    awayRecent10Total: recentMean(away, 'total', 10),
-    homeRestDays: hr,
-    awayRestDays: ar,
-    homeBackToBack: hr === null ? null : hr <= 1,
-    awayBackToBack: ar === null ? null : ar <= 1,
-    homeVenueSampleCount: home.venueSampleCount,
-    awayVenueSampleCount: away.venueSampleCount,
+    homeRecent5Margin: recentMean(home, 'margin', 5), awayRecent5Margin: recentMean(away, 'margin', 5),
+    homeRecent10Margin: recentMean(home, 'margin', 10), awayRecent10Margin: recentMean(away, 'margin', 10),
+    homeRecent5Total: recentMean(home, 'total', 5), awayRecent5Total: recentMean(away, 'total', 5),
+    homeRecent10Total: recentMean(home, 'total', 10), awayRecent10Total: recentMean(away, 'total', 10),
+    homeRestDays: hr, awayRestDays: ar, homeBackToBack: hr === null ? null : hr <= 1, awayBackToBack: ar === null ? null : ar <= 1,
+    homeVenueSampleCount: home.venueSampleCount, awayVenueSampleCount: away.venueSampleCount,
+    homeEstimatedPossessions: homeAdv.possessions, awayEstimatedPossessions: awayAdv.possessions,
+    homeOffensiveRating: homeAdv.offensiveRating, awayOffensiveRating: awayAdv.offensiveRating,
+    homeDefensiveRating: homeAdv.defensiveRating, awayDefensiveRating: awayAdv.defensiveRating,
+    homeFastBreakPoints: homeAdv.fastBreakPoints, awayFastBreakPoints: awayAdv.fastBreakPoints,
   };
 }
+
 
 export class GameMarketContextService {
   async build(game: NormalizedApexGame, home: TeamHistorySummary, away: TeamHistorySummary): Promise<GameMarketContextV2> {
@@ -344,33 +558,48 @@ export class GameMarketContextService {
 
     let mlb: MlbStarterContextV2 | null = null;
     let nfl: NflStrengthContextV2 | null = null;
+    let ncaaf: NflStrengthContextV2 | null = null;
     let wnba: WnbaProductionContextV1 | null = null;
+    let soccer: SoccerChanceContextV1 | null = null;
     if (game.sport === 'MLB') {
-      mlb = await getMlbContext(game);
+      mlb = await getMlbContext(game, home);
       if (!mlb.homeProbablePitcher || !mlb.awayProbablePitcher) notes.push('Probable starter identity is incomplete; starter adjustment remains partial.');
       if (mlb.temperatureF === null) notes.push('Pregame weather is unavailable or not yet posted; no weather adjustment is applied.');
       if ((mlb.homeLineupCount ?? 0) >= 9 && (mlb.awayLineupCount ?? 0) >= 9) notes.push('Both MLB batting orders are posted and captured as pregame context.');
       else notes.push('One or both MLB batting orders are not yet fully posted; no lineup-quality adjustment is inferred.');
-      notes.push('Park identity and weather are captured for audit, but park-factor/umpire effects remain disabled until validated.');
+      notes.push('Park identity, empirical point-in-time home-venue scoring, weather, starter quality and bullpen workload are frozen pregame for the totals context challenger. Context remains shadow-only until its postgame walk-forward MAE proves an out-of-sample gain.');
       if (mlb.homeBullpenInningsLast3 !== null && mlb.awayBullpenInningsLast3 !== null) notes.push(`Verified recent bullpen workload captured: home ${mlb.homeBullpenInningsLast3.toFixed(1)} IP / away ${mlb.awayBullpenInningsLast3.toFixed(1)} IP across up to three completed games.`);
       else notes.push('Bullpen workload could not be verified for both teams; no bullpen adjustment is applied where missing.');
     } else if (game.sport === 'NFL') {
-      nfl = await buildNflContext(home, away, game.startTime);
-      notes.push('NFL V2 shadow uses recent scoring-margin form, rest, net yards/play and turnover-margin context from completed prior games.');
-      notes.push('True EPA remains disabled until a separately validated expected-points model is available; Apex will not relabel yards/play as EPA.');
+      nfl = await buildFootballContext(game, home, away, 'NFL');
+      notes.push('NFL context freezes recent totals, plays, red-zone efficiency, yards/play, turnover margin, rest and verified pregame weather when available.');
+      notes.push('True EPA and pressure rate remain disabled until independently validated sources exist; Apex will not relabel proxy metrics as EPA/pressure.');
+    } else if (game.sport === 'NCAAF') {
+      ncaaf = await buildFootballContext(game, home, away, 'NCAAF');
+      notes.push('NCAAF context freezes recent totals, plays, red-zone efficiency, yards/play, turnover margin, rest and verified pregame weather when available.');
+      notes.push('College context remains shadow-only and uses wider bounds because roster/coaching variance is materially higher.');
     } else if (game.sport === 'WNBA') {
-      wnba = buildWnbaContext(home, away, game.startTime);
+      wnba = await buildWnbaContext(home, away, game.startTime);
       notes.push('WNBA production context uses point-in-time completed games only: recent 5/10 form, venue samples and verified rest state.');
-      notes.push('WNBA rest/back-to-back state is audit context in v1.14.8 and does not independently manufacture an edge.');
+      notes.push('WNBA pace/possessions, offensive/defensive efficiency, fast-break scoring when available, rest and recent totals are frozen as shadow-only totals context.');
+      notes.push('No WNBA lineup/injury variable is fabricated when a verified public pregame feed does not expose it.');
+    } else if (game.sport === 'SOCCER') {
+      soccer = await getSoccerContext(game, home, away);
+      if (soccer?.homeRecent5XgFor !== null && soccer?.awayRecent5XgFor !== null) notes.push('Soccer recent xG/chance-creation context was verified from completed pregame ESPN summaries and frozen for the totals challenger.');
+      else notes.push('Soccer xG is not consistently available for this competition; the totals challenger falls back to point-in-time recent scoring totals without fabricating xG.');
     }
 
     const specializedAvailable = game.sport === 'MLB'
       ? Boolean(mlb?.homeProbablePitcher || mlb?.awayProbablePitcher)
       : game.sport === 'NFL'
         ? Boolean(nfl?.homeStrengthIndex !== null && nfl?.awayStrengthIndex !== null)
+        : game.sport === 'NCAAF'
+          ? Boolean(ncaaf?.homeStrengthIndex !== null && ncaaf?.awayStrengthIndex !== null)
         : game.sport === 'WNBA'
           ? Boolean(wnba && home.sampleCount >= 6 && away.sampleCount >= 6)
-          : false;
+          : game.sport === 'SOCCER'
+            ? Boolean(soccer || (generic.homeRecent5Total !== null && generic.awayRecent5Total !== null))
+            : false;
 
     return {
       contextVersion: 'APEX_GAME_CONTEXT_V2',
@@ -379,7 +608,9 @@ export class GameMarketContextService {
       ...generic,
       mlb,
       nfl,
+      ncaaf,
       wnba,
+      soccer,
       notes,
     };
   }

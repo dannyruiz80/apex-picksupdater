@@ -81,6 +81,7 @@ export const PropsView: React.FC<PropsViewProps> = ({
   >('EV_DESC');
   const [oddsFormat, setOddsFormat] = useState<'AMERICAN' | 'DECIMAL'>('AMERICAN');
   const [expandedQuoteId, setExpandedQuoteId] = useState<string | null>(null);
+  const [showAllProps, setShowAllProps] = useState(false);
   const [expandedExplanationQuoteId, setExpandedExplanationQuoteId] = useState<string | null>(null);
   const [expandedDecisionQuoteId, setExpandedDecisionQuoteId] = useState<string | null>(null);
 
@@ -392,6 +393,19 @@ export const PropsView: React.FC<PropsViewProps> = ({
     });
   }, [propsData, selectedCategory, selectedBookmaker, selectedRecommendationFilter, searchQuery, sortBy]);
 
+
+  const topFiveModeEligible = selectedCategory === 'ALL' && selectedBookmaker === 'ALL' && selectedRecommendationFilter === 'ALL' && !searchQuery.trim();
+  const displayedProps = useMemo(() => {
+    if (showAllProps || !topFiveModeEligible) return filteredProps;
+    const counts = new Map<string, number>();
+    return filteredProps.filter((prop) => {
+      const key = prop.marketCategory || 'Other';
+      const next = (counts.get(key) || 0) + 1;
+      counts.set(key, next);
+      return next <= 5;
+    });
+  }, [filteredProps, showAllProps, topFiveModeEligible]);
+
   const qualifiedRankedProps = useMemo(() => canonicalQualifiedPropQuotes(propsData), [propsData]);
 
   const topQualifiedProp = qualifiedRankedProps[0] || null;
@@ -589,7 +603,7 @@ export const PropsView: React.FC<PropsViewProps> = ({
 
       {/* Sport Selector Chips */}
       <div id="props-sport-chips" className="flex items-center gap-1.5 overflow-x-auto pb-1">
-        {(['ALL', 'MLB', 'NFL', 'NBA', 'WNBA', 'NHL', 'SOCCER', 'TENNIS'] as ApexSportFilter[]).map((sport) => {
+        {(['ALL', 'MLB', 'NFL', 'NCAAF', 'NBA', 'WNBA', 'NHL', 'SOCCER', 'TENNIS'] as ApexSportFilter[]).map((sport) => {
           const isSelected = selectedSport === sport;
           return (
             <button
@@ -947,8 +961,15 @@ export const PropsView: React.FC<PropsViewProps> = ({
           </p>
         </div>
       ) : (
+        <>
+        {topFiveModeEligible && filteredProps.length > displayedProps.length && (
+          <div className="mb-3 flex items-center justify-between rounded-xl border border-slate-800 bg-[#0d1322] px-4 py-3">
+            <div><div className="text-xs font-black text-slate-200">Decision-first prop view</div><div className="text-[10px] text-slate-500">Showing the top 5 ranked quotes per market category by default.</div></div>
+            <button type="button" onClick={() => setShowAllProps(v => !v)} className="rounded-lg border border-cyan-500/30 bg-cyan-500/10 px-3 py-2 text-[10px] font-black text-cyan-300">{showAllProps ? 'Top 5 per category' : `Show all ${filteredProps.length}`}</button>
+          </div>
+        )}
         <div id="props-grid-container" className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-          {filteredProps.map((quote) => {
+          {displayedProps.map((quote) => {
             const isExpanded = expandedQuoteId === quote.quoteId;
 
             // Formatted odds
@@ -2073,6 +2094,7 @@ export const PropsView: React.FC<PropsViewProps> = ({
             );
           })}
         </div>
+        </>
       )}
 
       {/* Roster Integrity & Negative Tests Audit Panel */}

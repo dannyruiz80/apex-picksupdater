@@ -54,7 +54,7 @@ interface TestCaseResult {
   dataSummary?: any;
 }
 
-const ALL_SPORTS: ApexSport[] = ['MLB', 'NFL', 'NBA', 'WNBA', 'NHL', 'SOCCER', 'TENNIS'];
+const ALL_SPORTS: ApexSport[] = ['MLB', 'NFL', 'NCAAF', 'NBA', 'WNBA', 'NHL', 'SOCCER', 'TENNIS'];
 
 export const AuditView: React.FC<AuditViewProps> = ({ onGoToOverview }) => {
   const [activeAuditTab, setActiveAuditTab] = useState<'BACKTEST' | 'MODEL_ARENA' | 'PIPELINE'>('MODEL_ARENA');
@@ -181,7 +181,7 @@ export const AuditView: React.FC<AuditViewProps> = ({ onGoToOverview }) => {
     }
   };
 
-  // Real-Data Automated Test Suite State covering all 7 sports including Tennis
+  // Real-Data Automated Test Suite State covering all 8 sports including Tennis
   const [isRunningTests, setIsRunningTests] = useState(false);
   const [testResults, setTestResults] = useState<TestCaseResult[]>([
     {
@@ -595,7 +595,7 @@ export const AuditView: React.FC<AuditViewProps> = ({ onGoToOverview }) => {
           ...updated[11],
           status: 'pass',
           latencyMs: t12Elapsed,
-          details: `Merged ${data12.games.length} events across all 7 sports (MLB, NFL, NBA, WNBA, NHL, Soccer, Tennis) sorted chronologically.`,
+          details: `Merged ${data12.games.length} events across all 8 sports (MLB, NFL, NCAAF, NBA, WNBA, NHL, Soccer, Tennis) sorted chronologically.`,
         };
       } else {
         throw new Error(`Expected >=60 multi-sport events on 2024-08-28, got ${data12.games?.length || 0}`);
@@ -617,7 +617,7 @@ export const AuditView: React.FC<AuditViewProps> = ({ onGoToOverview }) => {
           ...updated[12],
           status: 'pass',
           latencyMs: t13Elapsed,
-          details: `Live polling across all 7 sports returned ${data13.games.length} total events (${data13.liveCount} currently LIVE).`,
+          details: `Live polling across all 8 sports returned ${data13.games.length} total events (${data13.liveCount} currently LIVE).`,
         };
       } else {
         throw new Error(`Live scores failed: HTTP ${res13.status}`);
@@ -1651,7 +1651,7 @@ export const AuditView: React.FC<AuditViewProps> = ({ onGoToOverview }) => {
               <span>Multi-Sport Real-Data Automated Verification Suite</span>
             </h3>
             <p className="text-xs text-slate-400">
-              Rigorous live & historical endpoint test runner covering MLB, NFL, NBA, WNBA, NHL, Soccer, and ATP/WTA Tennis
+              Rigorous live & historical endpoint test runner covering MLB, NFL, NCAAF, NBA, WNBA, NHL, Soccer, and ATP/WTA Tennis
             </p>
           </div>
 

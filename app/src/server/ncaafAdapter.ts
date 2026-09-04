@@ -7,11 +7,12 @@ import {
 import { normalizeStatus, sanitizeScheduleDate, getChicagoTodayDate } from './shared.js';
 import { isStartTimeOnScheduleDate } from './scheduleDateIdentity.js';
 
-const ESPN_NFL_SCOREBOARD = 'https://site.api.espn.com/apis/site/v2/sports/football/nfl/scoreboard';
+const ESPN_NCAAF_SCOREBOARD = 'https://site.api.espn.com/apis/site/v2/sports/football/college-football/scoreboard';
+const FBS_QUERY = 'groups=80&limit=200';
 
-export const nflAuditState: SportAuditDiagnostic = {
-  sport: 'NFL',
-  sourceName: 'ESPN NFL Public Scoreboard API',
+export const ncaafAuditState: SportAuditDiagnostic = {
+  sport: 'NCAAF',
+  sourceName: 'ESPN NCAAF Public Scoreboard API (FBS)',
   sourceStatus: 'UNINITIALIZED',
   lastScheduleFetch: {
     timestamp: null, requestedDate: null, gamesRetrieved: 0, upcomingCount: 0,
@@ -22,9 +23,9 @@ export const nflAuditState: SportAuditDiagnostic = {
 };
 
 function recordError(endpoint: string, message: string) {
-  nflAuditState.sourceStatus = 'ERROR';
-  nflAuditState.recentErrors.unshift({ timestamp: new Date().toISOString(), endpoint, message });
-  if (nflAuditState.recentErrors.length > 10) nflAuditState.recentErrors.pop();
+  ncaafAuditState.sourceStatus = 'ERROR';
+  ncaafAuditState.recentErrors.unshift({ timestamp: new Date().toISOString(), endpoint, message });
+  if (ncaafAuditState.recentErrors.length > 10) ncaafAuditState.recentErrors.pop();
 }
 
 function numericScore(raw: any): number | null {
@@ -34,7 +35,7 @@ function numericScore(raw: any): number | null {
   return Number.isFinite(n) ? n : null;
 }
 
-export function nflStateFlags(status: ApexGameStatus, startTime: string, nowMs = Date.now()) {
+export function ncaafStateFlags(status: ApexGameStatus, startTime: string, nowMs = Date.now()) {
   const startMs = Date.parse(startTime);
   return {
     pregameBetEligible: status === 'UPCOMING' && Number.isFinite(startMs) && startMs > nowMs,
@@ -42,8 +43,13 @@ export function nflStateFlags(status: ApexGameStatus, startTime: string, nowMs =
   };
 }
 
-export function parseNflScoreboard(raw: any, scheduleDate: string, lastVerifiedAt: string, nowMs = Date.now()): NormalizedApexGame[] {
-  const leagueName = raw?.leagues?.[0]?.abbreviation || raw?.leagues?.[0]?.name || 'NFL';
+function competitionLabel(competition: any): string | null {
+  const notes = Array.isArray(competition?.notes) ? competition.notes : [];
+  const headline = notes.find((n: any) => String(n?.headline || '').trim())?.headline;
+  return headline ? String(headline) : null;
+}
+
+export function parseNcaafScoreboard(raw: any, scheduleDate: string, lastVerifiedAt: string, nowMs = Date.now()): NormalizedApexGame[] {
   const rawEvents = Array.isArray(raw?.events) ? raw.events : [];
   return rawEvents.map((ev: any) => {
     const competition = ev?.competitions?.[0] || {};
@@ -55,10 +61,11 @@ export function parseNflScoreboard(raw: any, scheduleDate: string, lastVerifiedA
     const homeComp = competitors.find((c: any) => c?.homeAway === 'home');
     const awayComp = competitors.find((c: any) => c?.homeAway === 'away');
     const startTime = String(ev?.date || competition?.date || lastVerifiedAt);
-    const flags = nflStateFlags(status, startTime, nowMs);
+    const flags = ncaafStateFlags(status, startTime, nowMs);
     const scoreVisible = status !== 'UPCOMING';
     return {
-      eventId: String(ev?.id), sport: 'NFL' as const, league: String(leagueName), scheduleDate, startTime,
+      eventId: String(ev?.id), sport: 'NCAAF' as const, league: 'NCAAF',
+      competition: competitionLabel(competition), scheduleDate, startTime,
       awayTeamId: awayComp?.team?.id ? String(awayComp.team.id) : awayComp?.id ? String(awayComp.id) : null,
       awayTeam: awayComp?.team?.displayName || awayComp?.team?.name || null,
       awayAbbreviation: awayComp?.team?.abbreviation || null,
@@ -77,13 +84,13 @@ export function parseNflScoreboard(raw: any, scheduleDate: string, lastVerifiedA
   }).filter((game: NormalizedApexGame) => game.homeTeamId && game.awayTeamId && game.homeTeam && game.awayTeam);
 }
 
-export function filterNflScheduleDate(games: NormalizedApexGame[], scheduleDate: string): NormalizedApexGame[] {
+export function filterNcaafScheduleDate(games: NormalizedApexGame[], scheduleDate: string): NormalizedApexGame[] {
   return games.filter((game) => isStartTimeOnScheduleDate(game.startTime, scheduleDate));
 }
 
-export function nflGameToLiveUpdate(game: NormalizedApexGame): NormalizedLiveScoreUpdate {
+export function ncaafGameToLiveUpdate(game: NormalizedApexGame): NormalizedLiveScoreUpdate {
   return {
-    eventId: game.eventId, sport: 'NFL', status: game.status, statusDetail: game.statusDetail,
+    eventId: game.eventId, sport: 'NCAAF', status: game.status, statusDetail: game.statusDetail,
     league: game.league, scheduleDate: game.scheduleDate, startTime: game.startTime,
     homeTeamId: game.homeTeamId, homeTeam: game.homeTeam, homeAbbreviation: game.homeAbbreviation,
     awayTeamId: game.awayTeamId, awayTeam: game.awayTeam, awayAbbreviation: game.awayAbbreviation,
@@ -95,26 +102,29 @@ export function nflGameToLiveUpdate(game: NormalizedApexGame): NormalizedLiveSco
 
 async function fetchScoreboard(url: string, userAgent: string): Promise<any> {
   const response = await fetch(url, { headers: { 'User-Agent': userAgent, Accept: 'application/json' } });
-  if (!response.ok) throw new Error(`ESPN NFL scoreboard HTTP ${response.status}: ${response.statusText}`);
+  if (!response.ok) throw new Error(`ESPN NCAAF scoreboard HTTP ${response.status}: ${response.statusText}`);
   return response.json();
 }
 
-export async function fetchNflSchedule(dateInput?: string): Promise<{
+function withQuery(extra?: string): string {
+  return `${ESPN_NCAAF_SCOREBOARD}?${FBS_QUERY}${extra ? `&${extra}` : ''}`;
+}
+
+export async function fetchNcaafSchedule(dateInput?: string): Promise<{
   scheduleDate: string; source: 'ESPN'; lastVerifiedAt: string; count: number; games: NormalizedApexGame[];
 }> {
   const started = Date.now();
   const scheduleDate = sanitizeScheduleDate(dateInput);
-  const url = `${ESPN_NFL_SCOREBOARD}?dates=${scheduleDate.replace(/-/g, '')}`;
+  const url = withQuery(`dates=${scheduleDate.replace(/-/g, '')}`);
   try {
-    const data = await fetchScoreboard(url, 'ApexPicks/1.14.9 (NFL Schedule)');
+    const data = await fetchScoreboard(url, 'ApexPicks/1.14.9 (NCAAF Schedule)');
     const lastVerifiedAt = new Date().toISOString();
-    const parsedGames = parseNflScoreboard(data, scheduleDate, lastVerifiedAt);
-    // ESPN NFL scoreboard date queries can return an entire league week. The Picks date
-    // selector is a calendar-date contract, so weekly spillover is removed before any
-    // model, prop, market or saved-slate path can see the event.
-    const games = filterNflScheduleDate(parsedGames, scheduleDate);
-    nflAuditState.sourceStatus = 'OPERATIONAL';
-    nflAuditState.lastScheduleFetch = {
+    const parsedGames = parseNcaafScoreboard(data, scheduleDate, lastVerifiedAt);
+    // FBS queries occasionally include neighboring-day/week spillover. Keep the selected
+    // slate date authoritative before markets or models are evaluated.
+    const games = filterNcaafScheduleDate(parsedGames, scheduleDate);
+    ncaafAuditState.sourceStatus = 'OPERATIONAL';
+    ncaafAuditState.lastScheduleFetch = {
       timestamp: lastVerifiedAt, requestedDate: scheduleDate, gamesRetrieved: games.length,
       upcomingCount: games.filter((g) => g.status === 'UPCOMING').length,
       liveCount: games.filter((g) => g.status === 'LIVE').length,
@@ -124,34 +134,34 @@ export async function fetchNflSchedule(dateInput?: string): Promise<{
     };
     return { scheduleDate, source: 'ESPN', lastVerifiedAt, count: games.length, games };
   } catch (err: any) {
-    recordError('/api/schedule?sport=NFL', err?.message || 'Failed to fetch NFL schedule');
+    recordError('/api/schedule?sport=NCAAF', err?.message || 'Failed to fetch NCAAF schedule');
     throw err;
   }
 }
 
-export async function fetchNflLiveScores(): Promise<{
-  sport: 'NFL'; lastVerifiedAt: string; count: number; liveCount: number; games: NormalizedLiveScoreUpdate[];
+export async function fetchNcaafLiveScores(): Promise<{
+  sport: 'NCAAF'; lastVerifiedAt: string; count: number; liveCount: number; games: NormalizedLiveScoreUpdate[];
 }> {
   const started = Date.now();
   const todayChicago = getChicagoTodayDate();
   try {
-    // Like WNBA, current/live scoreboard is requested without a date first to avoid UTC rollover
-    // hiding a game in progress. A Chicago-date request is only the fallback.
-    let data = await fetchScoreboard(ESPN_NFL_SCOREBOARD, 'ApexPicks/1.14.9 (NFL Live Poll)');
+    // Current/live scoreboard is requested without a date first. The Chicago-date query is only a fallback,
+    // preventing a UTC rollover from hiding an in-progress college football game.
+    let data = await fetchScoreboard(withQuery(), 'ApexPicks/1.14.9 (NCAAF Live Poll)');
     let rawEvents = Array.isArray(data?.events) ? data.events : [];
     if (!rawEvents.length) {
-      data = await fetchScoreboard(`${ESPN_NFL_SCOREBOARD}?dates=${todayChicago.replace(/-/g, '')}`, 'ApexPicks/1.14.9 (NFL Live Fallback)');
+      data = await fetchScoreboard(withQuery(`dates=${todayChicago.replace(/-/g, '')}`), 'ApexPicks/1.14.9 (NCAAF Live Fallback)');
       rawEvents = Array.isArray(data?.events) ? data.events : [];
     }
     const lastVerifiedAt = new Date().toISOString();
-    const normalized = parseNflScoreboard({ ...data, events: rawEvents }, todayChicago, lastVerifiedAt);
-    const games = normalized.map(nflGameToLiveUpdate);
+    const normalized = parseNcaafScoreboard({ ...data, events: rawEvents }, todayChicago, lastVerifiedAt);
+    const games = normalized.map(ncaafGameToLiveUpdate);
     const liveCount = games.filter((g) => g.status === 'LIVE').length;
-    nflAuditState.sourceStatus = 'OPERATIONAL';
-    nflAuditState.lastLiveScoreFetch = { timestamp: lastVerifiedAt, gamesUpdated: games.length, liveCount, durationMs: Date.now() - started };
-    return { sport: 'NFL', lastVerifiedAt, count: games.length, liveCount, games };
+    ncaafAuditState.sourceStatus = 'OPERATIONAL';
+    ncaafAuditState.lastLiveScoreFetch = { timestamp: lastVerifiedAt, gamesUpdated: games.length, liveCount, durationMs: Date.now() - started };
+    return { sport: 'NCAAF', lastVerifiedAt, count: games.length, liveCount, games };
   } catch (err: any) {
-    recordError('/api/live-scores?sport=NFL', err?.message || 'Failed to fetch NFL live scores');
+    recordError('/api/live-scores?sport=NCAAF', err?.message || 'Failed to fetch NCAAF live scores');
     throw err;
   }
 }

@@ -59,6 +59,7 @@ export class PlayerStatsService {
     bySport: {
       MLB: { requests: 0, resolved: 0, gamesRetrieved: 0 },
       NFL: { requests: 0, resolved: 0, gamesRetrieved: 0 },
+      NCAAF: { requests: 0, resolved: 0, gamesRetrieved: 0 },
       NBA: { requests: 0, resolved: 0, gamesRetrieved: 0 },
       WNBA: { requests: 0, resolved: 0, gamesRetrieved: 0 },
       NHL: { requests: 0, resolved: 0, gamesRetrieved: 0 },
