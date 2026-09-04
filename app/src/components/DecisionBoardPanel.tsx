@@ -18,7 +18,7 @@ interface DecisionBoardPanelProps {
   loading?: boolean;
   error?: string | null;
   onScan?: () => void;
-  onOpenPick?: (eventId: string, pickType?: 'PLAYER_PROP' | 'GAME_MARKET') => void;
+  onOpenPick?: (eventId: string) => void;
   compact?: boolean;
   scanLabel?: string;
 }
@@ -57,12 +57,12 @@ export const DecisionBoardPanel: React.FC<DecisionBoardPanelProps> = ({
               <span className="text-xs font-black uppercase tracking-[0.16em]">Apex Decision Board</span>
             </div>
             <span className="rounded-md border border-emerald-500/30 bg-emerald-500/10 px-2 py-0.5 text-[10px] font-mono font-bold text-emerald-300">
-              VALUE GATE · MODEL MATURITY SHOWN
+              PRODUCTION GATE ONLY
             </span>
           </div>
           <h2 className="mt-1.5 text-xl sm:text-2xl font-extrabold text-white">Best verified opportunities first.</h2>
           <p className="mt-1 text-xs sm:text-sm text-slate-400 max-w-3xl">
-            Apex ranks recommendations that cleared identity, point-in-time, probability, price freshness, edge, EV and reliability gates. Independent game models are clearly marked EARLY EVIDENCE until prospective calibration matures.
+            Apex ranks only recommendations that cleared identity, point-in-time, probability, price freshness, edge, EV and reliability gates. If none qualify, the correct answer is PASS.
           </p>
         </div>
 
@@ -125,7 +125,7 @@ export const DecisionBoardPanel: React.FC<DecisionBoardPanelProps> = ({
               const primary = idx === 0;
               return (
                 <article
-                  key={`${pick.eventId}-${pick.pickType || 'PLAYER_PROP'}-${pick.playerId || pick.selectionLabel}-${pick.marketKey}-${pick.line}-${pick.side}`}
+                  key={`${pick.eventId}-${pick.playerId}-${pick.marketKey}-${pick.line}-${pick.side}`}
                   className={`rounded-xl border p-4 sm:p-5 ${primary ? 'border-emerald-400/45 bg-emerald-950/20 xl:col-span-1' : 'border-slate-800 bg-[#0d1322]'}`}
                 >
                   <div className="flex items-start justify-between gap-3">
@@ -135,12 +135,13 @@ export const DecisionBoardPanel: React.FC<DecisionBoardPanelProps> = ({
                           #{pick.rank} {primary ? 'TOP QUALIFIED PICK' : 'QUALIFIED'}
                         </span>
                         <span className="text-[10px] font-mono font-bold text-slate-400">{pick.sport} · {pick.marketCategory}</span>
-                        {pick.pickType === 'GAME_MARKET' && (
-                          <span className="rounded border border-cyan-500/30 bg-cyan-500/10 px-1.5 py-0.5 text-[9px] font-mono font-bold text-cyan-300">GAME MODEL · EARLY EVIDENCE</span>
-                        )}
                       </div>
                       <h3 className="mt-2 text-lg font-extrabold text-white">
-                        {pick.displayPick || `${pick.playerName || ''} ${pick.side} ${pick.line ?? ''}`}
+                        {pick.pickType === 'GAME_MARKET' ? (pick.displayPick || pick.selectionLabel || pick.marketCategory) : (
+                          <>
+                            {pick.playerName} <span className="text-emerald-300">{pick.side} {pick.line}</span>
+                          </>
+                        )}
                       </h3>
                       <p className="text-xs text-slate-400 mt-0.5">{pick.eventTitle}</p>
                     </div>
@@ -167,7 +168,6 @@ export const DecisionBoardPanel: React.FC<DecisionBoardPanelProps> = ({
                     <div className="rounded-lg border border-slate-800 bg-black/20 p-2.5">
                       <div className="flex items-center gap-1 text-[10px] text-slate-500"><ShieldCheck className="h-3 w-3" /> DATA</div>
                       <div className="text-sm font-bold text-white mt-0.5">{pick.reliabilityTier}</div>
-                      {pick.marketDepth ? <div className="text-[9px] text-slate-500">{pick.marketDepth} books</div> : null}
                     </div>
                   </div>
 
@@ -190,10 +190,10 @@ export const DecisionBoardPanel: React.FC<DecisionBoardPanelProps> = ({
                     {onOpenPick && (
                       <button
                         type="button"
-                        onClick={() => onOpenPick(pick.eventId, pick.pickType)}
+                        onClick={() => onOpenPick(pick.eventId)}
                         className="inline-flex items-center gap-1 text-xs font-bold text-emerald-300 hover:text-emerald-200"
                       >
-                        {pick.pickType === 'GAME_MARKET' ? 'Game markets' : 'Full analysis'} <ChevronRight className="h-3.5 w-3.5" />
+                        Full analysis <ChevronRight className="h-3.5 w-3.5" />
                       </button>
                     )}
                   </div>
@@ -203,8 +203,45 @@ export const DecisionBoardPanel: React.FC<DecisionBoardPanelProps> = ({
           </div>
         )}
 
+        {board && board.requestedMaxGames > 0 && board.coverageBySport && board.coverageBySport.length > 0 && (
+          <div className="rounded-xl border border-slate-800 bg-[#0a0f19] p-3">
+            <div className="text-[10px] font-black uppercase tracking-[0.14em] text-slate-400">Sport coverage funnel</div>
+            <div className="mt-2 flex flex-wrap gap-2">
+              {board.coverageBySport.map((row) => {
+                const topRejects = (Object.entries(row.rejectionReasons || {}) as Array<[string, number]>)
+                  .sort((a,b) => b[1] - a[1])
+                  .slice(0, 3);
+                return (
+                  <div
+                    key={row.sport}
+                    title={row.lastMessage || undefined}
+                    className={`rounded-lg border px-2.5 py-2 text-[10px] font-mono ${row.qualifiedPicks > 0 ? 'border-emerald-500/35 bg-emerald-950/20 text-emerald-200' : row.eventsWithModelData > 0 ? 'border-amber-500/25 bg-amber-950/10 text-amber-200' : 'border-slate-800 bg-slate-900/60 text-slate-400'}`}
+                  >
+                    <div className="flex items-center gap-2">
+                      <span className="font-black">{row.sport}</span>
+                      <span className={`rounded px-1.5 py-0.5 text-[8px] font-black ${row.productionConnection === 'CONNECTED' ? 'bg-emerald-500/10 text-emerald-300' : row.productionConnection === 'PARTIAL' ? 'bg-amber-500/10 text-amber-300' : 'bg-slate-800 text-slate-500'}`}>
+                        {row.productionConnection}
+                      </span>
+                    </div>
+                    <div>{row.scannedEvents}/{row.scheduleEvents} scanned · {row.eventsWithModelData} model-ready · {row.qualifiedPicks} picks</div>
+                    {row.qualifiedPicks === 0 && topRejects.length > 0 && (
+                      <div className="mt-1 max-w-[360px] text-[9px] text-slate-400">
+                        Blocked: {topRejects.map(([reason,count]) => `${reason} ×${count}`).join(' · ')}
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+            <div className="mt-2 text-[10px] text-slate-500">
+              {board.sportFilter === 'ALL' ? 'ALL SPORTS is using round-robin coverage.' : `${board.sportFilter} filter is active; switch to All Sports to compare leagues.`}
+            </div>
+          </div>
+        )}
+
         {board && (
           <div className="flex flex-wrap items-center gap-x-4 gap-y-1 border-t border-slate-800 pt-3 text-[10px] font-mono text-slate-500">
+            <span>Filter: <strong className="text-slate-300">{board.sportFilter}</strong></span>
             <span>Status: <strong className={board.status === 'SUCCESS' ? 'text-emerald-400' : 'text-slate-400'}>{board.status}</strong></span>
             {board.gamesScanned > 0 && <span>Games scanned: {board.gamesScanned}</span>}
             <span>Qualified: {board.qualifiedCount}</span>

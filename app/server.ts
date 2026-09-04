@@ -41,6 +41,15 @@ import { runGameMarketModelVerificationSuite } from "./src/server/gameMarketMode
 import { gameMarketPredictionRepository } from "./src/server/gameMarketPredictionRepository.js";
 import { gameMarketLearningService } from "./src/server/gameMarketLearningService.js";
 import { gameMarketBoardService } from "./src/server/gameMarketBoardService.js";
+import { parlayService } from "./src/server/parlayService.js";
+import { runParlayVerificationSuite } from "./src/server/parlayVerification.js";
+import { runGameMarketCalibrationVerificationSuite } from "./src/server/gameMarketCalibrationVerification.js";
+import { bankrollService } from "./src/server/bankrollService.js";
+import { runBankrollVerificationSuite } from "./src/server/bankrollVerification.js";
+import { runDecisionBoardCoverageVerificationSuite } from "./src/server/decisionBoardCoverageVerification.js";
+import { runPropsSlatePresentationVerificationSuite } from "./src/server/propsSlatePresentationVerification.js";
+import { scanPlayerPropSlate } from "./src/server/propsSlateService.js";
+import { runPropsSlateScanVerification } from "./src/server/propsSlateScanVerification.js";
 import { ApexSportFilter, TennisTourFilter, NormalizedApexGame, NormalizedPlayerPropQuote } from "./src/types.js";
 
 const VALID_SPORTS = new Set<string>(['ALL', ...ALL_SPORTS]);
@@ -67,7 +76,7 @@ async function startServer() {
   app.get("/api/version", (_req, res) => {
     res.status(200).json({
       version: APP_VERSION,
-      build: "win-probability-game-market-v2-shadow",
+      build: "props-slate-first-v1-14-3",
       environment: process.env.NODE_ENV || "development",
       timestamp: new Date().toISOString(),
     });
@@ -79,6 +88,50 @@ async function startServer() {
   // Saved lookup is zero-credit. Slate/event scans are explicit,
   // pregame-only and remain behind the existing quota guard.
   // ==========================================================
+  app.get("/api/decision-board/coverage/verify", async (_req, res) => {
+    res.status(200).json(await runDecisionBoardCoverageVerificationSuite());
+  });
+
+  app.get("/api/props/slate/verify", (_req, res) => {
+    res.status(200).json(runPropsSlatePresentationVerificationSuite());
+  });
+
+  app.get("/api/props/slate-scan/verify", (_req, res) => {
+    res.status(200).json(runPropsSlateScanVerification());
+  });
+
+  app.post("/api/props/slate-scan", async (req, res) => {
+    const games = Array.isArray(req.body?.games) ? req.body.games as NormalizedApexGame[] : [];
+    const selectedDate = String(req.body?.selectedDate || '');
+    const sportRaw = String(req.body?.sportFilter || 'ALL').toUpperCase();
+    const sportFilter = VALID_SPORTS.has(sportRaw) ? sportRaw as ApexSportFilter : 'ALL';
+    const maxEvents = Number(req.body?.maxEvents || 8);
+
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(selectedDate)) {
+      return res.status(400).json({ status: 'ERROR', message: 'selectedDate must be YYYY-MM-DD', props: [] });
+    }
+    if (games.length === 0) {
+      return res.status(200).json({
+        status: 'NO_PROPS', selectedDate, sportFilter, eventsAvailable: 0, propCapableEvents: 0,
+        eventsScanned: 0, propsCount: 0, qualifiedCount: 0, props: [], eventResults: [], unsupportedSports: [],
+        message: 'No verified upcoming games are available on this props slate.',
+        quotaState: marketQuotaGuard.getQuotaState(),
+      });
+    }
+
+    try {
+      const result = await scanPlayerPropSlate({ games, selectedDate, sportFilter, maxEvents });
+      res.status(200).json(result);
+    } catch (err: any) {
+      console.error('[Apex Picks] POST /api/props/slate-scan error:', err?.message || err);
+      res.status(500).json({
+        status: 'ERROR', selectedDate, sportFilter, eventsAvailable: games.length, propCapableEvents: 0,
+        eventsScanned: 0, propsCount: 0, qualifiedCount: 0, props: [], eventResults: [], unsupportedSports: [],
+        message: err?.message || 'Failed to scan player-prop slate', quotaState: marketQuotaGuard.getQuotaState(),
+      });
+    }
+  });
+
   app.get("/api/decision-board/saved", (req, res) => {
     const sportRaw = String(req.query.sport || 'ALL').toUpperCase();
     const sport = VALID_SPORTS.has(sportRaw) ? (sportRaw as ApexSportFilter) : 'ALL';
@@ -131,7 +184,7 @@ async function startServer() {
     const sportRaw = String(req.body?.sport || 'ALL').toUpperCase();
     const sport = VALID_SPORTS.has(sportRaw) ? (sportRaw as ApexSportFilter) : 'ALL';
     const date = String(req.body?.date || '');
-    const maxGames = Math.max(1, Math.min(5, Number(req.body?.maxGames || 3)));
+    const maxGames = Math.max(1, Math.min(48, Number(req.body?.maxGames || (sport === 'ALL' ? 48 : sport === 'TENNIS' ? 30 : 12))));
     if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) {
       return res.status(400).json({ status: 'ERROR', message: 'date must be YYYY-MM-DD', picks: [] });
     }
@@ -184,8 +237,102 @@ async function startServer() {
     res.status(200).json(gameMarketPredictionRepository.getStatus());
   });
 
+  app.get("/api/ml/game-markets/v1/calibration", (_req, res) => {
+    res.status(200).json(gameMarketPredictionRepository.getCalibrationDashboard());
+  });
+
+  app.get("/api/ml/game-markets/v1/calibration/verify", (_req, res) => {
+    res.status(200).json(runGameMarketCalibrationVerificationSuite());
+  });
+
   app.post("/api/ml/game-markets/v1/grade", async (_req, res) => {
     res.status(200).json(await gameMarketLearningService.gradePending());
+  });
+
+  // ==========================================================
+  // APEX PARLAY LAB V1.13
+  // Only production-qualified, distinct-event legs are eligible.
+  // Same-event correlation is fail-closed until a joint model exists.
+  // ==========================================================
+  app.post("/api/parlays/scan", async (req, res) => {
+    const sportRaw = String(req.body?.sport || 'ALL').toUpperCase();
+    const sport = VALID_SPORTS.has(sportRaw) ? (sportRaw as ApexSportFilter) : 'ALL';
+    const date = String(req.body?.date || '');
+    const legCount = Math.max(2, Math.min(4, Number(req.body?.legCount || 2)));
+    const maxGames = Math.max(legCount, Math.min(12, Number(req.body?.maxGames || 10)));
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) {
+      return res.status(400).json({ status: 'ERROR', message: 'date must be YYYY-MM-DD', tickets: [] });
+    }
+    try {
+      const addDays = (iso: string, days: number) => {
+        const d = new Date(`${iso}T12:00:00Z`); d.setUTCDate(d.getUTCDate() + days); return d.toISOString().slice(0, 10);
+      };
+      const merged = new Map<string, NormalizedApexGame>();
+      const scheduleDatesScanned: string[] = [];
+      for (let dayOffset = 0; dayOffset < 7; dayOffset++) {
+        const requested = addDays(date, dayOffset);
+        const schedule = await fetchSchedule(sport, requested);
+        scheduleDatesScanned.push(schedule.scheduleDate || requested);
+        for (const game of schedule.games) merged.set(game.eventId, game);
+        const futureCount = [...merged.values()].filter((g) => g.status === 'UPCOMING' && g.startTime && Date.parse(g.startTime) > Date.now()).length;
+        if (futureCount >= maxGames) break;
+      }
+      const report = await parlayService.scan([...merged.values()], sport, date, legCount, maxGames, scheduleDatesScanned);
+      res.status(200).json(report);
+    } catch (err: any) {
+      res.status(500).json({ status: 'ERROR', message: err.message || 'Parlay scan failed', tickets: [] });
+    }
+  });
+
+  app.get("/api/parlays/verify", (_req, res) => {
+    res.status(200).json(runParlayVerificationSuite());
+  });
+
+
+  // ==========================================================
+  // BANKROLL & RISK MANAGER V1.14
+  // Local-only state in app/data; updater packages never include it.
+  // ==========================================================
+  app.get("/api/bankroll", (_req, res) => {
+    res.status(200).json(bankrollService.getSummary());
+  });
+
+  app.get("/api/bankroll/verify", (_req, res) => {
+    res.status(200).json(runBankrollVerificationSuite());
+  });
+
+  app.put("/api/bankroll/settings", (req, res) => {
+    try {
+      res.status(200).json(bankrollService.updateSettings(req.body || {}));
+    } catch (err: any) {
+      res.status(400).json({ status: 'ERROR', message: err.message || 'Unable to update bankroll settings.' });
+    }
+  });
+
+  app.post("/api/bankroll/bets", (req, res) => {
+    try {
+      const body = req.body || {};
+      res.status(201).json(bankrollService.trackBet({
+        source: body.source === 'PARLAY' ? 'PARLAY' : body.source === 'MANUAL' ? 'MANUAL' : 'STRAIGHT',
+        label: String(body.label || 'Tracked wager'),
+        sportsbook: String(body.sportsbook || 'Unknown'),
+        oddsAmerican: Number(body.oddsAmerican),
+        requestedUnits: Number(body.requestedUnits),
+        eventIds: Array.isArray(body.eventIds) ? body.eventIds.map(String) : [],
+        details: Array.isArray(body.details) ? body.details.map(String) : [],
+      }));
+    } catch (err: any) {
+      res.status(409).json({ status: 'ERROR', message: err.message || 'Unable to track wager.' });
+    }
+  });
+
+  app.post("/api/bankroll/bets/:betId/settle", (req, res) => {
+    try {
+      const outcome = String(req.body?.outcome || '').toUpperCase() as any;
+      res.status(200).json(bankrollService.settleBet(String(req.params.betId || ''), outcome));
+    } catch (err: any) {
+      res.status(400).json({ status: 'ERROR', message: err.message || 'Unable to settle wager.' });
+    }
   });
 
   // ==========================================

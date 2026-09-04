@@ -55,6 +55,11 @@ export type V2ContributionStatus = 'MATERIAL' | 'NO_MATERIAL_ADJUSTMENT' | 'UNAV
 export interface GameMarketEvidenceSlice {
   independentDecisiveObservations: number;
   calibrationGap: number | null;
+  expectedCalibrationError?: number | null;
+  brierScore?: number | null;
+  logLoss?: number | null;
+  evidenceTier?: 'EARLY' | 'DEVELOPING' | 'MODERATE' | 'MATURE';
+  recommendedModelWeight?: number;
 }
 
 export interface GameMarketEvidenceContext extends GameMarketEvidenceSlice {
@@ -79,6 +84,12 @@ export interface GameMarketCandidateV1 {
   decisionReferenceProbability: number;
   probabilityShrinkageWeight: number;
   modelEvidenceObservations: number;
+  calibrationAdjustedProbability: number;
+  prospectiveCalibrationAdjustmentPP: number;
+  calibrationEvidenceTier: 'EARLY' | 'DEVELOPING' | 'MODERATE' | 'MATURE';
+  calibrationExpectedError: number | null;
+  calibrationBrierScore: number | null;
+  bookOffers: Array<{ sportsbook: string; oddsAmerican: number; quoteTimestamp: string }>;
   pushProbability: number;
   breakEvenProbability: number;
   marketConsensusProbability: number | null;
@@ -267,15 +278,36 @@ function probabilityEvidenceWeight(
   reliabilityTier: SampleReliabilityTier,
 ): number {
   const n = Math.max(0, Math.floor(evidence?.independentDecisiveObservations ?? 0));
-  let weight = n >= 300 ? 0.85 : n >= 150 ? 0.72 : n >= 75 ? 0.58 : n >= 25 ? 0.45 : 0.35;
+  const profileWeightProvided = typeof evidence?.recommendedModelWeight === 'number';
+  let weight = profileWeightProvided
+    ? evidence!.recommendedModelWeight!
+    : n >= 300 ? 0.88 : n >= 150 ? 0.78 : n >= 75 ? 0.62 : n >= 30 ? 0.48 : 0.35;
   const gap = evidence?.calibrationGap;
-  if (gap !== null && gap !== undefined && Number.isFinite(gap) && Math.abs(gap) >= REVIEW_CALIBRATION_GAP) {
-    weight = Math.max(0.25, weight - 0.15);
+  const ece = evidence?.expectedCalibrationError;
+  const brier = evidence?.brierScore;
+  // Repository-provided weights already include calibration penalties. Only derive
+  // those penalties here for callers that supply the older evidence shape.
+  if (!profileWeightProvided) {
+    if (gap !== null && gap !== undefined && Number.isFinite(gap) && Math.abs(gap) >= REVIEW_CALIBRATION_GAP) weight = Math.max(0.25, weight - 0.12);
+    if (ece !== null && ece !== undefined && Number.isFinite(ece) && ece >= 0.06) weight = Math.max(0.25, weight - 0.10);
+    if (brier !== null && brier !== undefined && Number.isFinite(brier) && brier >= 0.25) weight = Math.max(0.25, weight - 0.08);
   }
-  if (reliabilityTier === 'MODERATE') weight = Math.min(weight, 0.45);
+  if (reliabilityTier === 'MODERATE') weight = Math.min(weight, 0.50);
   if (reliabilityTier === 'LIMITED') weight = Math.min(weight, 0.30);
   if (reliabilityTier === 'VERY_LIMITED') weight = Math.min(weight, 0.20);
-  return weight;
+  return Math.max(0.20, Math.min(0.90, weight));
+}
+
+function prospectiveCalibrationAdjust(rawProbability: number, evidence: GameMarketEvidenceContext | undefined): { probability: number; adjustmentPP: number } {
+  const n = Math.max(0, Math.floor(evidence?.independentDecisiveObservations ?? 0));
+  const gap = evidence?.calibrationGap;
+  if (n < 30 || gap === null || gap === undefined || !Number.isFinite(gap)) return { probability: rawProbability, adjustmentPP: 0 };
+  // Prospective-only bias correction. Positive gap means historical predictions were overconfident.
+  // The correction grows gradually with sample size and is capped at 5 pp to prevent overfitting.
+  const learningRate = Math.min(1, n / 150);
+  const correction = clampValue(gap * learningRate, -0.05, 0.05);
+  const probability = clamp(rawProbability - correction);
+  return { probability, adjustmentPP: (probability - rawProbability) * 100 };
 }
 
 function evFromProbability(probability: number, pushProbability: number, oddsDecimal: number): number {
@@ -705,8 +737,9 @@ export class GameMarketModelService {
       // never feeds expected score or the raw model probability.
       const decisionReference = clamp(consensus ?? breakEven);
       const maxDecisionProbability = Math.max(0, 1 - pushProbability);
+      const calibration = prospectiveCalibrationAdjust(rawModelProbability, candidateEvidence);
       const decisionProbability = clamp(
-        rawModelProbability * evidenceWeight + decisionReference * (1 - evidenceWeight),
+        calibration.probability * evidenceWeight + decisionReference * (1 - evidenceWeight),
         0,
         maxDecisionProbability,
       );
@@ -757,6 +790,15 @@ export class GameMarketModelService {
         decisionReferenceProbability: decisionReference,
         probabilityShrinkageWeight: evidenceWeight,
         modelEvidenceObservations: evidenceObservations,
+        calibrationAdjustedProbability: calibration.probability,
+        prospectiveCalibrationAdjustmentPP: calibration.adjustmentPP,
+        calibrationEvidenceTier: candidateEvidence?.evidenceTier ?? (evidenceObservations >= 150 ? 'MATURE' : evidenceObservations >= 75 ? 'MODERATE' : evidenceObservations >= 30 ? 'DEVELOPING' : 'EARLY'),
+        calibrationExpectedError: candidateEvidence?.expectedCalibrationError ?? null,
+        calibrationBrierScore: candidateEvidence?.brierScore ?? null,
+        bookOffers: [...freshest]
+          .sort((a,b)=>b.americanOdds-a.americanOdds)
+          .filter((o,i,arr)=>arr.findIndex(x=>x.sportsbook===o.sportsbook)===i)
+          .map((o)=>({sportsbook:o.sportsbook,oddsAmerican:o.americanOdds,quoteTimestamp:o.timestamp})),
         pushProbability: clamp(pushProbability),
         breakEvenProbability: breakEven,
         marketConsensusProbability: consensus,

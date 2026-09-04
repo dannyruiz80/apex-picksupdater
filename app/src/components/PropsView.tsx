@@ -7,6 +7,7 @@ import {
   PropNegativeTestResponse,
   MarketQuotaState,
   PropPipelineAuditDiagnostic,
+  PropSlateScanResponse,
 } from '../types';
 import {
   Users,
@@ -38,11 +39,14 @@ import {
   Scale,
   Target,
 } from 'lucide-react';
+import { formatPropSelectionLabel, humanizePropMarket } from '../propPresentation';
 
 interface PropsViewProps {
   games: NormalizedApexGame[];
   selectedSport: ApexSportFilter;
   setSelectedSport: (sport: ApexSportFilter) => void;
+  selectedDate: string;
+  setSelectedDate: (date: string) => void;
   onGoToOverview?: () => void;
   initialSelectedGameId?: string | null;
 }
@@ -51,10 +55,15 @@ export const PropsView: React.FC<PropsViewProps> = ({
   games,
   selectedSport,
   setSelectedSport,
+  selectedDate,
+  setSelectedDate,
   initialSelectedGameId = null,
 }) => {
   const [selectedGameId, setSelectedGameId] = useState<string>('');
   const [propsData, setPropsData] = useState<NormalizedPlayerPropQuote[]>([]);
+  const [slatePropsData, setSlatePropsData] = useState<NormalizedPlayerPropQuote[]>([]);
+  const [slateScan, setSlateScan] = useState<PropSlateScanResponse | null>(null);
+  const [viewMode, setViewMode] = useState<'SLATE' | 'EVENT'>('SLATE');
   const [isLoadingProps, setIsLoadingProps] = useState<boolean>(false);
   const [propsError, setPropsError] = useState<string | null>(null);
   const [quotaState, setQuotaState] = useState<MarketQuotaState | null>(null);
@@ -83,35 +92,87 @@ export const PropsView: React.FC<PropsViewProps> = ({
     tests: PropNegativeTestResponse[];
   } | null>(null);
 
-  // Filter available upcoming games based on sport
+  const chicagoDate = (offsetDays = 0) => {
+    const now = new Date();
+    now.setDate(now.getDate() + offsetDays);
+    return new Intl.DateTimeFormat('en-CA', {
+      timeZone: 'America/Chicago',
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+    }).format(now);
+  };
+  const todayChicago = chicagoDate(0);
+  const tomorrowChicago = chicagoDate(1);
+  const dateMode = selectedDate === todayChicago ? 'TODAY' : selectedDate === tomorrowChicago ? 'TOMORROW' : 'CUSTOM';
+
+  const eventChicagoDate = (value: string | null | undefined) => {
+    if (!value) return '';
+    const parsed = new Date(value);
+    if (Number.isNaN(parsed.getTime())) return value.slice(0, 10);
+    return new Intl.DateTimeFormat('en-CA', {
+      timeZone: 'America/Chicago',
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+    }).format(parsed);
+  };
+
+  // Filter available upcoming games based on sport AND the active Props slate date.
+  // The explicit date match prevents old-slate events from flashing while App.tsx
+  // is fetching the newly selected schedule.
   const eligibleGames = useMemo(() => {
     return games.filter((g) => {
       const sportMatch = selectedSport === 'ALL' || g.sport === selectedSport;
       const isUpcoming = g.status === 'UPCOMING';
-      return sportMatch && isUpcoming;
+      const eventDate = eventChicagoDate(g.startTime || g.scheduleDate);
+      return sportMatch && isUpcoming && eventDate === selectedDate;
     });
-  }, [games, selectedSport]);
+  }, [games, selectedSport, selectedDate]);
 
-  // Honor a decision-board deep link first; otherwise choose the first eligible event.
+  // Slate-first by default. A deep link can intentionally open one event, but
+  // ordinary Props use never requires stepping through every event dropdown.
   useEffect(() => {
-    if (eligibleGames.length > 0) {
-      const deepLinked = initialSelectedGameId && eligibleGames.some((g) => g.eventId === initialSelectedGameId)
-        ? initialSelectedGameId
-        : null;
-      if (deepLinked && selectedGameId !== deepLinked) {
-        setSelectedGameId(deepLinked);
-      } else if (!deepLinked && (!selectedGameId || !eligibleGames.some((g) => g.eventId === selectedGameId))) {
-        setSelectedGameId(eligibleGames[0].eventId);
-      }
-    } else {
+    const deepLinked = initialSelectedGameId && eligibleGames.some((g) => g.eventId === initialSelectedGameId)
+      ? initialSelectedGameId
+      : null;
+    if (deepLinked) {
+      setSelectedGameId(deepLinked);
+      setViewMode('EVENT');
+      return;
+    }
+    if (selectedGameId && !eligibleGames.some((g) => g.eventId === selectedGameId)) {
       setSelectedGameId('');
-      setPropsData([]);
+      setViewMode('SLATE');
     }
   }, [eligibleGames, selectedGameId, initialSelectedGameId]);
+
+  // A date/sport change starts a fresh slate view. This prevents a prior event's
+  // props from masquerading as results for the newly selected slate.
+  useEffect(() => {
+    if (initialSelectedGameId) return;
+    setSelectedGameId('');
+    setViewMode('SLATE');
+    setPropsData([]);
+    setSlatePropsData([]);
+    setSlateScan(null);
+    setPropsError(null);
+    setSelectedCategory('ALL');
+    setSelectedBookmaker('ALL');
+  }, [selectedDate, selectedSport, initialSelectedGameId]);
 
   const currentGame = useMemo(() => {
     return games.find((g) => g.eventId === selectedGameId) || null;
   }, [games, selectedGameId]);
+
+  const gameByEventId = useMemo(() => new Map(eligibleGames.map((g) => [g.eventId, g])), [eligibleGames]);
+  const eventTitleForQuote = (quote: NormalizedPlayerPropQuote) => {
+    const g = gameByEventId.get(quote.apexEventId);
+    if (!g) return `${quote.verifiedTeam} vs ${quote.verifiedOpponent}`;
+    return g.sport === 'TENNIS'
+      ? `${g.playerAName || 'Player A'} vs ${g.playerBName || 'Player B'}`
+      : `${g.awayTeam || 'Away'} @ ${g.homeTeam || 'Home'}`;
+  };
 
   // Fetch Props for selected game
   const fetchPropsForGame = useCallback(async (game: NormalizedApexGame) => {
@@ -146,6 +207,44 @@ export const PropsView: React.FC<PropsViewProps> = ({
     }
   }, []);
 
+  // Scan a quota-controlled slice of the entire selected Props slate.
+  // This is the primary discovery path; event-by-event fetch remains drill-down only.
+  const scanPropsSlate = useCallback(async () => {
+    setIsLoadingProps(true);
+    setPropsError(null);
+    setSelectedGameId('');
+    setViewMode('SLATE');
+    try {
+      const res = await fetch('/api/props/slate-scan', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          games: eligibleGames,
+          selectedDate,
+          sportFilter: selectedSport,
+          maxEvents: 8,
+        }),
+      });
+      if (!res.ok) throw new Error(`Server returned HTTP ${res.status}`);
+      const data: PropSlateScanResponse = await res.json();
+      setSlateScan(data);
+      setSlatePropsData(data.props || []);
+      setPropsData(data.props || []);
+      setQuotaState(data.quotaState);
+      if (data.status !== 'SUCCESS') {
+        setPropsError(data.message || `No props returned across slate (${data.status})`);
+      }
+    } catch (err: any) {
+      console.error('[PropsView] Slate scan failed:', err);
+      setSlateScan(null);
+      setSlatePropsData([]);
+      setPropsData([]);
+      setPropsError(err?.message || 'Failed to scan player-prop slate');
+    } finally {
+      setIsLoadingProps(false);
+    }
+  }, [eligibleGames, selectedDate, selectedSport]);
+
   // Fetch audit diagnostics
   const fetchAuditData = useCallback(async () => {
     try {
@@ -177,13 +276,13 @@ export const PropsView: React.FC<PropsViewProps> = ({
     }
   };
 
-  // Trigger prop fetch when currentGame changes
+  // Event drill-down fetches only after the user explicitly chooses an event.
   useEffect(() => {
-    if (currentGame) {
+    if (viewMode === 'EVENT' && currentGame) {
       fetchPropsForGame(currentGame);
     }
     fetchAuditData();
-  }, [currentGame, fetchPropsForGame, fetchAuditData]);
+  }, [currentGame, viewMode, fetchPropsForGame, fetchAuditData]);
 
   // Derived filter categories and bookmakers
   const availableCategories = useMemo(() => {
@@ -308,6 +407,23 @@ export const PropsView: React.FC<PropsViewProps> = ({
 
   const topQualifiedProp = qualifiedRankedProps[0] || null;
 
+  const slateCoverageBySport = useMemo(() => {
+    if (!slateScan) return [];
+    const grouped = new Map<string, { sport: string; events: number; props: number; qualified: number; noProps: number }>();
+    for (const row of slateScan.eventResults || []) {
+      const current = grouped.get(row.sport) || { sport: row.sport, events: 0, props: 0, qualified: 0, noProps: 0 };
+      current.events += 1;
+      current.props += row.propsCount;
+      current.qualified += row.qualifiedCount;
+      if (row.propsCount === 0) current.noProps += 1;
+      grouped.set(row.sport, current);
+    }
+    for (const sport of slateScan.unsupportedSports || []) {
+      if (!grouped.has(sport)) grouped.set(sport, { sport, events: 0, props: 0, qualified: 0, noProps: 0 });
+    }
+    return [...grouped.values()];
+  }, [slateScan]);
+
   const formatDecisionOdds = (v: number | null | undefined) =>
     v === null || v === undefined ? '—' : v > 0 ? `+${v}` : `${v}`;
 
@@ -368,12 +484,12 @@ export const PropsView: React.FC<PropsViewProps> = ({
 
             <button
               id="refresh-props-btn"
-              onClick={() => currentGame && fetchPropsForGame(currentGame)}
-              disabled={isLoadingProps || !currentGame}
+              onClick={() => viewMode === 'EVENT' && currentGame ? fetchPropsForGame(currentGame) : scanPropsSlate()}
+              disabled={isLoadingProps || (viewMode === 'EVENT' ? !currentGame : eligibleGames.length === 0)}
               className="flex items-center gap-1.5 px-3.5 py-1.5 bg-slate-800 hover:bg-slate-700 border border-slate-700 text-slate-200 text-xs font-medium rounded-lg transition-all disabled:opacity-50"
             >
               <RefreshCw className={`w-3.5 h-3.5 ${isLoadingProps ? 'animate-spin text-cyan-400' : ''}`} />
-              Refresh Props
+              {viewMode === 'EVENT' ? 'Refresh Event Props' : 'Scan Slate for Props'}
             </button>
           </div>
         </div>
@@ -438,11 +554,14 @@ export const PropsView: React.FC<PropsViewProps> = ({
                       <span className="rounded border border-slate-700 bg-slate-900 px-2 py-0.5 text-[10px] font-bold text-slate-300">{reliability} DATA</span>
                     </div>
                     <div className="text-xl sm:text-2xl font-extrabold text-white">
-                      {topQualifiedProp.playerDisplayName} {rec.side} {topQualifiedProp.line}
+                      {formatPropSelectionLabel(topQualifiedProp.playerDisplayName, topQualifiedProp.providerMarketKey || topQualifiedProp.marketCategory, rec.side, topQualifiedProp.line)}
                     </div>
                     <div className="text-sm text-slate-300 mt-1">
                       {topQualifiedProp.marketCategory} · {a.sportsbook} {formatDecisionOdds(a.oddsAmerican)}
                     </div>
+                    {viewMode === 'SLATE' && (
+                      <div className="text-xs text-cyan-300/80 mt-1">{eventTitleForQuote(topQualifiedProp)} · {topQualifiedProp.sport}</div>
+                    )}
                     <div className="text-xs text-slate-400 mt-2">
                       It qualifies because the production gate passed identity, provenance, freshness, point-in-time integrity, probability, edge and EV requirements.
                     </div>
@@ -458,7 +577,7 @@ export const PropsView: React.FC<PropsViewProps> = ({
           })() : (
             <div className="rounded-xl border border-slate-700 bg-slate-900/60 p-5 flex items-start gap-3">
               <ShieldCheck className="w-5 h-5 text-slate-400 shrink-0 mt-0.5" />
-              <div><div className="font-bold text-white">PASS this event</div><div className="text-xs text-slate-400 mt-1">Apex found no prop that clears the production recommendation gate. A blank recommendation is intentional—not a reason to force a pick.</div></div>
+              <div><div className="font-bold text-white">{viewMode === 'SLATE' ? 'PASS scanned slate' : 'PASS this event'}</div><div className="text-xs text-slate-400 mt-1">Apex found no prop that clears the production recommendation gate. A blank recommendation is intentional—not a reason to force a pick.</div></div>
             </div>
           )}
 
@@ -469,7 +588,7 @@ export const PropsView: React.FC<PropsViewProps> = ({
                 const a = rec.selectedAnalysis!;
                 return (
                   <div key={p.quoteId} className="rounded-lg border border-slate-800 bg-slate-950/60 p-3 flex items-center justify-between gap-3">
-                    <div><div className="text-[10px] text-slate-500 font-bold">#{idx + 2} QUALIFIED</div><div className="text-sm font-bold text-white">{p.playerDisplayName} {rec.side} {p.line}</div><div className="text-[10px] text-slate-400">{a.sportsbook} {formatDecisionOdds(a.oddsAmerican)}</div></div>
+                    <div><div className="text-[10px] text-slate-500 font-bold">#{idx + 2} QUALIFIED</div><div className="text-sm font-bold text-white">{formatPropSelectionLabel(p.playerDisplayName, p.providerMarketKey || p.marketCategory, rec.side, p.line)}</div><div className="text-[10px] text-slate-400">{viewMode === 'SLATE' ? `${eventTitleForQuote(p)} · ` : ''}{a.sportsbook} {formatDecisionOdds(a.oddsAmerican)}</div></div>
                     <div className="text-right"><div className="font-mono text-lg font-extrabold text-emerald-300">{a.apexProbability !== null ? `${(a.apexProbability * 100).toFixed(1)}%` : '—'}</div><div className="text-[10px] text-slate-400">EV {a.expectedValuePercent !== null ? `${a.expectedValuePercent >= 0 ? '+' : ''}${a.expectedValuePercent.toFixed(1)}%` : '—'}</div></div>
                   </div>
                 );
@@ -500,6 +619,95 @@ export const PropsView: React.FC<PropsViewProps> = ({
         })}
       </div>
 
+      {/* Props Slate Date Controls */}
+      <div id="props-date-toolbar" className="rounded-xl border border-slate-800/80 bg-slate-900/70 p-3 sm:p-4">
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+          <div className="flex flex-wrap items-center gap-2">
+            <div className="flex items-center gap-1.5 text-xs font-semibold text-slate-400">
+              <Calendar className="w-4 h-4 text-cyan-400" />
+              Props Slate:
+            </div>
+            <button
+              id="props-date-today"
+              onClick={() => setSelectedDate(todayChicago)}
+              className={`rounded-lg border px-3 py-1.5 text-xs font-bold ${dateMode === 'TODAY' ? 'border-cyan-500/50 bg-cyan-500/15 text-cyan-200' : 'border-slate-700 bg-slate-950/70 text-slate-400 hover:text-slate-200'}`}
+            >
+              Today
+            </button>
+            <button
+              id="props-date-tomorrow"
+              onClick={() => setSelectedDate(tomorrowChicago)}
+              className={`rounded-lg border px-3 py-1.5 text-xs font-bold ${dateMode === 'TOMORROW' ? 'border-cyan-500/50 bg-cyan-500/15 text-cyan-200' : 'border-slate-700 bg-slate-950/70 text-slate-400 hover:text-slate-200'}`}
+            >
+              Tomorrow
+            </button>
+            <input
+              id="props-date-picker"
+              type="date"
+              value={selectedDate}
+              min={todayChicago}
+              onChange={(e) => e.target.value && setSelectedDate(e.target.value)}
+              className="rounded-lg border border-slate-700 bg-slate-950/80 px-3 py-1.5 text-xs font-mono text-slate-200 focus:border-cyan-500 focus:outline-none"
+            />
+          </div>
+          <div className="text-xs text-slate-400">
+            <span className="font-mono text-slate-300">{selectedDate}</span>
+            <span className="mx-2 text-slate-700">•</span>
+            <span>{eligibleGames.length} verified upcoming event{eligibleGames.length === 1 ? '' : 's'} on this props slate</span>
+          </div>
+        </div>
+        {dateMode === 'TOMORROW' && (
+          <div className="mt-2 text-[11px] text-amber-300/90">
+            Tomorrow's player-prop inventory can be thinner until sportsbooks publish player markets. Game ML / spread / total markets may appear earlier.
+          </div>
+        )}
+      </div>
+
+      {/* Slate-first discovery action */}
+      <div id="props-slate-discovery" className="rounded-xl border border-cyan-500/20 bg-cyan-950/10 p-4 flex flex-col lg:flex-row lg:items-center justify-between gap-4">
+        <div>
+          <div className="text-sm font-extrabold text-white">Find player props across the whole selected slate</div>
+          <div className="text-xs text-slate-400 mt-1">Apex scans up to 8 prop-capable upcoming events in a quota-controlled, multi-sport rotation. The event dropdown below is optional drill-down.</div>
+          {selectedSport === 'TENNIS' && (
+            <div className="mt-2 rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-[11px] text-amber-200">
+              Tennis schedule coverage is active, but this build has no verified tennis <b>player-prop</b> connector. You do not need to inspect the 96 match dropdown one by one; Apex will fail closed rather than pretend match markets are player props.
+            </div>
+          )}
+          {slateScan && (
+            <div className="mt-2 space-y-2">
+              <div className="flex flex-wrap gap-2 text-[10px] font-mono">
+                <span className="rounded border border-slate-700 bg-slate-950/70 px-2 py-1 text-slate-300">{slateScan.eventsScanned}/{slateScan.eventsAvailable} scheduled events scanned</span>
+                <span className="rounded border border-slate-700 bg-slate-950/70 px-2 py-1 text-slate-300">{slateScan.propCapableEvents} prop-capable events</span>
+                <span className="rounded border border-slate-700 bg-slate-950/70 px-2 py-1 text-slate-300">{slateScan.propsCount} distinct props</span>
+                <span className="rounded border border-emerald-500/30 bg-emerald-500/10 px-2 py-1 text-emerald-300">{slateScan.qualifiedCount} qualified</span>
+                {slateScan.unsupportedSports.length > 0 && (
+                  <span className="rounded border border-amber-500/30 bg-amber-500/10 px-2 py-1 text-amber-300">No player-prop connector: {slateScan.unsupportedSports.join(', ')}</span>
+                )}
+              </div>
+              {slateCoverageBySport.length > 0 && (
+                <div className="flex flex-wrap gap-2 text-[10px]">
+                  {slateCoverageBySport.map((row) => (
+                    <span key={row.sport} className={`rounded border px-2 py-1 ${row.qualified > 0 ? 'border-emerald-500/30 bg-emerald-500/10 text-emerald-300' : row.events === 0 ? 'border-amber-500/30 bg-amber-500/10 text-amber-300' : 'border-slate-700 bg-slate-950/60 text-slate-400'}`}>
+                      <b>{row.sport}</b> · {row.events} scanned · {row.props} props · {row.qualified} qualified
+                    </span>
+                  ))}
+                </div>
+              )}
+              {slateScan.message && <div className="text-[11px] text-slate-400">{slateScan.message}</div>}
+            </div>
+          )}
+        </div>
+        <button
+          id="scan-props-slate-btn"
+          onClick={scanPropsSlate}
+          disabled={isLoadingProps || eligibleGames.length === 0}
+          className="shrink-0 inline-flex items-center justify-center gap-2 rounded-xl border border-cyan-400/40 bg-cyan-500 px-5 py-3 text-sm font-black text-slate-950 hover:bg-cyan-400 disabled:opacity-50"
+        >
+          <RefreshCw className={`w-4 h-4 ${isLoadingProps && viewMode === 'SLATE' ? 'animate-spin' : ''}`} />
+          Scan Slate for Best Props
+        </button>
+      </div>
+
       {/* Event Selection & Filtering Control Bar */}
       <div
         id="props-filter-bar"
@@ -509,20 +717,33 @@ export const PropsView: React.FC<PropsViewProps> = ({
           {/* Game Selector */}
           <div className="md:col-span-2">
             <label className="block text-xs font-medium text-slate-400 mb-1.5">
-              Select Verified Upcoming Game
+              Optional Event Drill-down · Leave on All Scanned Events to browse the whole slate
             </label>
             <div className="relative">
               <select
                 id="props-game-select"
                 value={selectedGameId}
-                onChange={(e) => setSelectedGameId(e.target.value)}
+                onChange={(e) => {
+                  const nextId = e.target.value;
+                  setSelectedGameId(nextId);
+                  if (nextId) {
+                    setViewMode('EVENT');
+                    setPropsError(null);
+                  } else {
+                    setViewMode('SLATE');
+                    setPropsData(slatePropsData);
+                    setPropsError(slateScan?.status === 'SUCCESS' ? null : (slateScan?.message || null));
+                  }
+                }}
                 disabled={eligibleGames.length === 0}
                 className="w-full bg-slate-950/80 border border-slate-700/80 rounded-lg px-3.5 py-2 text-sm text-slate-100 focus:outline-none focus:border-cyan-500 transition-colors disabled:opacity-50 appearance-none pr-10"
               >
                 {eligibleGames.length === 0 ? (
                   <option value="">No upcoming games currently on slate</option>
                 ) : (
-                  eligibleGames.map((g) => {
+                  <>
+                    <option value="">All Scanned Events · Slate View</option>
+                    {eligibleGames.map((g) => {
                     const title =
                       g.sport === 'TENNIS'
                         ? `${g.playerAName} vs ${g.playerBName} (${g.tournamentName || 'Tennis'})`
@@ -533,7 +754,8 @@ export const PropsView: React.FC<PropsViewProps> = ({
                         {title} • {time}
                       </option>
                     );
-                  })
+                    })}
+                  </>
                 )}
               </select>
               <div className="absolute right-3 top-1/2 -translate-y-1/2 pointer-events-none text-slate-400">
@@ -713,7 +935,7 @@ export const PropsView: React.FC<PropsViewProps> = ({
           <div className="inline-flex items-center justify-center w-10 h-10 rounded-full bg-amber-500/10 text-amber-400 mb-3">
             <AlertTriangle className="w-5 h-5" />
           </div>
-          <h3 className="text-sm font-semibold text-slate-200">No Props Available for This Event</h3>
+          <h3 className="text-sm font-semibold text-slate-200">{viewMode === 'SLATE' ? 'No Props Found Across Scanned Slate' : 'No Props Available for This Event'}</h3>
           <p className="text-xs text-slate-400 mt-1 max-w-lg mx-auto">{propsError}</p>
         </div>
       ) : filteredProps.length === 0 ? (
@@ -727,12 +949,12 @@ export const PropsView: React.FC<PropsViewProps> = ({
           <h3 className="text-sm font-semibold text-slate-300">
             {searchQuery || selectedCategory !== 'ALL'
               ? 'No props match the active filters'
-              : 'No player props returned by provider'}
+              : viewMode === 'SLATE' ? 'No player props returned across scanned slate' : 'No player props returned by provider'}
           </h3>
           <p className="text-xs text-slate-500 mt-1">
             {searchQuery || selectedCategory !== 'ALL'
               ? 'Try adjusting your search query or selecting "All Categories".'
-              : 'The market provider has not published player proposition lines for this event yet.'}
+              : viewMode === 'SLATE' ? 'No verified player propositions were returned across the scanned events. Future inventories may not be posted yet.' : 'The market provider has not published player proposition lines for this event yet.'}
           </p>
         </div>
       ) : (
@@ -788,6 +1010,9 @@ export const PropsView: React.FC<PropsViewProps> = ({
                         <span className="text-slate-500">vs</span>
                         <span>{quote.verifiedOpponent}</span>
                       </div>
+                      {viewMode === 'SLATE' && (
+                        <div className="text-[10px] text-cyan-300/70 mt-1">{eventTitleForQuote(quote)} · {quote.sport}</div>
+                      )}
                     </div>
 
                     {/* Sportsbook Badge */}
@@ -801,7 +1026,7 @@ export const PropsView: React.FC<PropsViewProps> = ({
                     <div className="flex items-center gap-1.5">
                       <Flame className="w-4 h-4 text-cyan-400" />
                       <span className="text-xs font-semibold text-slate-200">
-                        {quote.marketCategory}
+                        {humanizePropMarket(quote.providerMarketKey || quote.marketCategory)}
                       </span>
                     </div>
                     <span className="text-xs font-mono font-bold text-cyan-300 bg-cyan-950/60 px-2 py-0.5 rounded border border-cyan-800/50">
@@ -814,7 +1039,7 @@ export const PropsView: React.FC<PropsViewProps> = ({
                     {overOddsFormatted && (
                       <div className="bg-slate-950/80 border border-slate-800 p-2.5 rounded-lg text-center">
                         <div className="text-[11px] font-semibold text-slate-400 uppercase tracking-wider">
-                          Over {quote.line}
+                          {humanizePropMarket(quote.providerMarketKey || quote.marketCategory)} · Over {quote.line}
                         </div>
                         <div className="text-sm font-bold font-mono text-emerald-400 mt-0.5">
                           {overOddsFormatted}
@@ -831,7 +1056,7 @@ export const PropsView: React.FC<PropsViewProps> = ({
                     {underOddsFormatted && (
                       <div className="bg-slate-950/80 border border-slate-800 p-2.5 rounded-lg text-center">
                         <div className="text-[11px] font-semibold text-slate-400 uppercase tracking-wider">
-                          Under {quote.line}
+                          {humanizePropMarket(quote.providerMarketKey || quote.marketCategory)} · Under {quote.line}
                         </div>
                         <div className="text-sm font-bold font-mono text-amber-400 mt-0.5">
                           {underOddsFormatted}

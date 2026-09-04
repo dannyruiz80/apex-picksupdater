@@ -1,3 +1,6 @@
 
 # Local Apex updater credentials
 /.update.env
+
+# Local Apex rollback backups (never commit)
+/.apex-backups/

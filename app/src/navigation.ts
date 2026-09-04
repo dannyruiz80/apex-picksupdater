@@ -59,7 +59,7 @@ export const NAVIGATION_ITEMS: NavItem[] = [
     label: 'Parlays',
     shortLabel: 'Parlays',
     iconName: 'Sparkles',
-    description: 'Multi-leg correlation matrices and expected value optimization',
+    description: 'Executable qualified-leg parlays with common-book pricing, correlation guardrails and ticket stake sizing',
     category: 'Core',
   },
   {
@@ -83,7 +83,7 @@ export const NAVIGATION_ITEMS: NavItem[] = [
     label: 'My Bets',
     shortLabel: 'My Bets',
     iconName: 'BookmarkCheck',
-    description: 'Personal portfolio ledger, CLV tracking, and bankroll analytics',
+    description: 'Current bankroll, dollar unit sizing, exposure caps and tracked bet ledger',
     category: 'Account',
   },
   {

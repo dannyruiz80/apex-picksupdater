@@ -1,7 +1,7 @@
 {
   "name": "react-example",
   "private": true,
-  "version": "1.12.1",
+  "version": "1.14.5",
   "type": "module",
   "scripts": {
     "dev": "tsx server.ts",
@@ -15,7 +15,12 @@
     "verify:mlb-k-v3": "tsx src/server/mlbPitcherKV3.verify.ts",
     "verify:champion-challenger": "tsx src/server/championChallenger.verify.ts",
     "verify:mlb-k-v5": "tsx src/server/mlbPitcherKV5.verify.ts",
-    "verify:game-markets": "tsx src/server/gameMarketModel.verify.ts"
+    "verify:game-markets": "tsx src/server/gameMarketModel.verify.ts",
+    "verify:parlay": "tsx src/server/parlay.verify.ts",
+    "verify:game-calibration": "tsx src/server/gameMarketCalibration.verify.ts",
+    "verify:bankroll": "tsx src/server/bankroll.verify.ts",
+    "verify:cross-sport-tennis": "tsx src/server/decisionBoardCrossSportTennisVerification.ts",
+    "verify:coverage-1-14-5": "tsx src/server/decisionBoardCoverage145Verification.ts"
   },
   "dependencies": {
     "@google/genai": "^2.4.0",

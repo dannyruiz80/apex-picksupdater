@@ -31,6 +31,7 @@ interface PicksViewProps {
   onRefresh: () => void;
   onSelectGame?: (game: NormalizedApexGame) => void;
   onOpenWinProbability?: () => void;
+  onOpenParlays?: () => void;
 }
 
 
@@ -57,6 +58,7 @@ export const PicksView: React.FC<PicksViewProps> = ({
   onRefresh,
   onSelectGame,
   onOpenWinProbability,
+  onOpenParlays,
 }) => {
   const [tennisTourFilter, setTennisTourFilter] = useState<TennisTourFilter>('ALL');
   const [selectedGameForMarkets, setSelectedGameForMarkets] = useState<NormalizedApexGame | null>(null);
@@ -86,7 +88,17 @@ export const PicksView: React.FC<PicksViewProps> = ({
       const res = await fetch('/api/decision-board/scan', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ sport: selectedSport, date: selectedDate, maxGames: 3 }),
+        body: JSON.stringify({
+          sport: selectedSport,
+          date: selectedDate,
+          maxGames: (() => {
+            const today = new Intl.DateTimeFormat('en-CA', { timeZone: 'America/Chicago', year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date());
+            const future = selectedDate > today;
+            if (selectedSport === 'ALL') return 48;
+            if (selectedSport === 'TENNIS') return future ? 30 : 24;
+            return future ? 12 : 10;
+          })(),
+        }),
       });
       const data = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(data.message || `Decision scan returned HTTP ${res.status}`);
@@ -245,6 +257,15 @@ export const PicksView: React.FC<PicksViewProps> = ({
               className="rounded-lg border border-cyan-500/35 bg-cyan-500/10 px-3 py-2 text-xs font-black text-cyan-200 hover:bg-cyan-500/20"
             >
               Win Probability · ML / Spread / Totals
+            </button>
+          )}
+          {onOpenParlays && (
+            <button
+              type="button"
+              onClick={onOpenParlays}
+              className="rounded-lg border border-fuchsia-500/35 bg-fuchsia-500/10 px-3 py-2 text-xs font-black text-fuchsia-200 hover:bg-fuchsia-500/20"
+            >
+              Build Qualified Parlays
             </button>
           )}
           {/* Sport Filters Bar */}

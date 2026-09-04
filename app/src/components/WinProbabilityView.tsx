@@ -84,7 +84,9 @@ const PickCard: React.FC<{ title: string; pick: DecisionBoardPick | null }> = ({
             <div><span className="text-slate-500">Market consensus:</span> <span className="font-bold text-slate-300">{pct(pick.marketConsensusProbability ?? null)}</span></div>
             <div><span className="text-slate-500">Raw disagreement:</span> <span className="font-bold text-slate-300">{pick.modelMarketDisagreementPP == null ? '—' : `${pick.modelMarketDisagreementPP.toFixed(1)} pp`}</span></div>
             <div><span className="text-slate-500">Raw EV:</span> <span className="font-bold text-slate-300">{pick.rawExpectedValuePercent == null ? '—' : `${pick.rawExpectedValuePercent >= 0 ? '+' : ''}${pick.rawExpectedValuePercent.toFixed(1)}%`}</span></div>
-            <div><span className="text-slate-500">Evidence:</span> <span className="font-bold text-slate-300">{pick.modelEvidenceObservations ?? 0} outcomes</span></div>
+            <div><span className="text-slate-500">Evidence:</span> <span className="font-bold text-slate-300">{pick.modelEvidenceObservations ?? 0} outcomes · {pick.gameCalibrationEvidenceTier ?? 'EARLY'}</span></div>
+            <div><span className="text-slate-500">Calibration adjust:</span> <span className="font-bold text-slate-300">{pick.prospectiveCalibrationAdjustmentPP == null ? '—' : `${pick.prospectiveCalibrationAdjustmentPP >= 0 ? '+' : ''}${pick.prospectiveCalibrationAdjustmentPP.toFixed(1)} pp`}</span></div>
+            <div><span className="text-slate-500">ECE / Brier:</span> <span className="font-bold text-slate-300">{pick.gameCalibrationEce == null ? '—' : `${(pick.gameCalibrationEce*100).toFixed(1)}%`} / {pick.gameCalibrationBrier == null ? '—' : pick.gameCalibrationBrier.toFixed(3)}</span></div>
           </div>
 
           <div className="text-[10px] text-slate-500">{pick.sportsbook} · {pick.reliabilityTier} · {pick.marketDepth ?? 0} books · {pick.gameEvTier ?? 'NORMAL'} EV tier</div>
@@ -177,7 +179,7 @@ export const WinProbabilityView: React.FC<WinProbabilityViewProps> = ({
           <div>
             <div className="flex items-center gap-2 text-cyan-300 text-xs font-black uppercase tracking-[0.15em]"><Target className="h-4 w-4" /> Game Market Decision Center</div>
             <div className="mt-1 text-lg font-extrabold text-white">See win probability even when the current price is a PASS.</div>
-            <div className="mt-1 text-xs text-slate-400">Probability forecast and betting value are deliberately separated.</div>
+            <div className="mt-1 text-xs text-slate-400">Probability forecast and betting value are deliberately separated. Prospective calibration learning adjusts only the guarded decision layer after enough graded evidence exists.</div>
           </div>
           <button onClick={scan} disabled={loading} className="inline-flex items-center justify-center gap-2 rounded-xl bg-cyan-400 px-5 py-3 text-sm font-black text-slate-950 hover:bg-cyan-300 disabled:opacity-50">
             <RefreshCw className={`h-4 w-4 ${loading ? 'animate-spin' : ''}`} /> {loading ? 'Scanning Game Markets…' : 'Scan ML / Spread / Totals'}

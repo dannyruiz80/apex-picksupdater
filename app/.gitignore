@@ -29,3 +29,6 @@ APEX_REAL_*.json
 # Local caches/logs
 *.log
 .cache/
+
+# Local Apex bankroll, learning, and runtime state
+data/

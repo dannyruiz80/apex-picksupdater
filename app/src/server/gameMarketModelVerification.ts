@@ -84,11 +84,16 @@ export function runGameMarketModelVerificationSuite() {
 
   const goodHome=evalGood.candidates.find(c=>c.marketType==='MONEYLINE'&&c.side==='HOME');
 
+  const learnedEvidence={independentDecisiveObservations:75,calibrationGap:0.06,expectedCalibrationError:0.04,brierScore:0.22,evidenceTier:'MODERATE' as const,recommendedModelWeight:0.50};
+  const evalLearned=gameMarketModelService.evaluateMarkets(game,plausibleMarkets,plausibleModel,learnedEvidence);
+  const learnedHome=evalLearned.candidates.find(c=>c.marketType==='MONEYLINE'&&c.side==='HOME');
+
   const tests=[
     check('Point-in-time parser excludes future/uncompleted games',parsed.length===1&&parsed[0].eventId==='1',`records=${parsed.length}`),
     check('Normal CDF is symmetric',Math.abs(normalCdf(1)+normalCdf(-1)-1)<1e-6,`sum=${normalCdf(1)+normalCdf(-1)}`),
     check('Plausible best-price candidate can still qualify after guardrails',!!goodHome&&goodHome.qualifies&&goodHome.sportsbook==='Book A',`status=${goodHome?.integrityStatus}; guardedEV=${goodHome?.expectedValuePercent}`),
     check('Early-evidence probability is shrunk without mutating raw model probability',!!goodHome&&goodHome.decisionProbability<goodHome.modelProbability&&Math.abs(goodHome.modelProbability-0.53)<1e-9,`raw=${goodHome?.modelProbability}; guarded=${goodHome?.decisionProbability}`),
+    check('Prospective calibration learning corrects overconfidence without rewriting raw probability',!!learnedHome&&learnedHome.prospectiveCalibrationAdjustmentPP<0&&Math.abs(learnedHome.modelProbability-0.53)<1e-9&&learnedHome.calibrationAdjustedProbability<learnedHome.modelProbability,`raw=${learnedHome?.modelProbability}; calibrated=${learnedHome?.calibrationAdjustedProbability}; deltaPP=${learnedHome?.prospectiveCalibrationAdjustmentPP}`),
     check('Extreme model-vs-market disagreement is VERIFY, not BET',!!extremeHome&&extremeHome.integrityStatus==='VERIFY'&&!extremeHome.qualifies&&extremeHome.reasonCodes.includes('MODEL_MARKET_DISAGREEMENT_EXTREME'),`status=${extremeHome?.integrityStatus}; disagreement=${extremeHome?.modelMarketDisagreementPP}`),
     check('Extreme guarded EV is not auto-promoted',!!extremeHome&&extremeHome.evTier==='EXTREME'&&extremeHome.reasonCodes.includes('GUARDED_EV_EXTREME_VERIFY_REQUIRED'),`tier=${extremeHome?.evTier}; guardedEV=${extremeHome?.expectedValuePercent}`),
     check('Market depth gate blocks one-book price',evalDepth.qualified.length===0&&evalDepth.candidates.some(c=>c.reasonCodes.includes('MARKET_DEPTH_BELOW_2_BOOKS')),`qualified=${evalDepth.qualified.length}`),
@@ -104,6 +109,7 @@ export function runGameMarketModelVerificationSuite() {
     modelVersion:'APEX_GAME_MARKET_V1',
     shadowModelVersion:'APEX_GAME_MARKET_V2_SHADOW',
     integrityVersion:'APEX_GAME_MARKET_INTEGRITY_V1_12_1',
+    calibrationLearningVersion:'APEX_GAME_CALIBRATION_LEARNING_V1_13',
     keyedOddsRequestsConsumed:0,
     tests,
   };
