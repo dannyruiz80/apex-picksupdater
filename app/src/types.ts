@@ -50,6 +50,10 @@ export interface NormalizedApexGame {
   homeAbbreviation: string | null;
   status: ApexGameStatus;
   statusDetail: string;
+  // Explicit state separation: betting eligibility and live visibility are not the same concept.
+  // These are populated by adapters where verified and default conservatively when absent.
+  pregameBetEligible?: boolean;
+  eventVisibleInLive?: boolean;
   awayScore: number | null;
   homeScore: number | null;
   
@@ -104,6 +108,22 @@ export interface NormalizedLiveScoreUpdate {
   sport: ApexSport;
   status: ApexGameStatus;
   statusDetail: string;
+
+  // Optional event identity lets the Live module surface a verified live event even when the
+  // currently selected schedule date does not already contain that event.
+  league?: string | null;
+  scheduleDate?: string | null;
+  startTime?: string | null;
+  homeTeamId?: string | null;
+  homeTeam?: string | null;
+  homeAbbreviation?: string | null;
+  awayTeamId?: string | null;
+  awayTeam?: string | null;
+  awayAbbreviation?: string | null;
+  venue?: string | null;
+  pregameBetEligible?: boolean;
+  eventVisibleInLive?: boolean;
+
   homeScore: number | null;
   awayScore: number | null;
   period?: number | null;

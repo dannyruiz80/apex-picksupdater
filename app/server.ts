@@ -36,6 +36,8 @@ import { mlbPitcherKHistoricalReplayService } from "./src/server/mlbPitcherKHist
 import { mlbPitcherKStarterShadowCaptureService } from "./src/server/mlbPitcherKStarterShadowCaptureService.js";
 import { runMlbPitcherKV5VerificationSuite } from "./src/server/mlbPitcherKV5Verification.js";
 import { simulateMlbPitcherKQuote } from "./src/server/monteCarloSimulationService.js";
+import { wnbaBacktestMonteCarloService } from "./src/server/wnbaBacktestMonteCarloService.js";
+import { loadWnbaSimulationSlate } from "./src/server/wnbaSimulationSlateService.js";
 import { decisionBoardService } from "./src/server/decisionBoardService.js";
 import { runGameMarketModelVerificationSuite } from "./src/server/gameMarketModelVerification.js";
 import { gameMarketPredictionRepository } from "./src/server/gameMarketPredictionRepository.js";
@@ -461,6 +463,65 @@ async function startServer() {
     } catch (err: any) {
       console.error('[Apex Picks] MLB pitcher K simulation error:', err.message);
       res.status(500).json({ status: 'ERROR', message: err.message || 'Simulation failed', simulations: [] });
+    }
+  });
+
+  // ==========================================================
+  // WNBA HISTORICAL WALK-FORWARD + MONTE CARLO CALIBRATION
+  // Real completed WNBA games create evidence. Simulation trials do NOT.
+  // Historical market ROI remains unavailable unless authentic archived
+  // lines/prices are present; Apex never fabricates historical -110 odds.
+  // ==========================================================
+  app.get("/api/ml/wnba/backtest/status", (_req, res) => {
+    const report = wnbaBacktestMonteCarloService.getSavedReport();
+    res.status(200).json({
+      status: report ? 'AVAILABLE' : 'NOT_RUN',
+      report,
+      moneylineEvidence: wnbaBacktestMonteCarloService.getMoneylineEvidence(),
+    });
+  });
+
+  app.post("/api/ml/wnba/backtest/run", async (req, res) => {
+    try {
+      const nowYear = new Date().getUTCFullYear();
+      const startSeason = Number(req.body?.startSeason ?? nowYear - 2);
+      const endSeason = Number(req.body?.endSeason ?? nowYear);
+      const trialsPerGame = Number(req.body?.trialsPerGame ?? 2000);
+      const report = await wnbaBacktestMonteCarloService.runHistoricalBacktest(startSeason, endSeason, trialsPerGame);
+      res.status(200).json({ status: 'SUCCESS', report, moneylineEvidence: wnbaBacktestMonteCarloService.getMoneylineEvidence() });
+    } catch (err: any) {
+      console.error('[Apex Picks] WNBA historical backtest error:', err.message);
+      res.status(500).json({ status: 'ERROR', message: err.message || 'WNBA historical backtest failed' });
+    }
+  });
+
+  app.get("/api/sims/wnba/slate", async (req, res) => {
+    const date = String(req.query?.date || '');
+    try {
+      const slate = await loadWnbaSimulationSlate(date);
+      res.status(200).json(slate);
+    } catch (err: any) {
+      res.status(400).json({ status: 'ERROR', message: err.message || 'WNBA simulation slate failed to load', games: [] });
+    }
+  });
+
+  app.post("/api/sims/wnba/game", async (req, res) => {
+    const game = req.body?.game as NormalizedApexGame;
+    const trials = Number(req.body?.trials ?? 25000);
+    if (!game || !game.eventId || game.sport !== 'WNBA') {
+      return res.status(400).json({ status: 'ERROR', message: 'A verified normalized WNBA game is required.' });
+    }
+    try {
+      const simulation = await wnbaBacktestMonteCarloService.simulateGame(game, trials);
+      res.status(200).json({
+        status: 'SUCCESS',
+        generatedAt: new Date().toISOString(),
+        simulation,
+        historicalEvidence: wnbaBacktestMonteCarloService.getMoneylineEvidence(),
+        note: 'Historical games create calibration evidence; Monte Carlo trials only resolve the scenario distribution.',
+      });
+    } catch (err: any) {
+      res.status(400).json({ status: 'NOT_ELIGIBLE', message: err.message || 'WNBA simulation failed' });
     }
   });
 

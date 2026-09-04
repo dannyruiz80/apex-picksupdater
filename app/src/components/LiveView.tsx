@@ -15,6 +15,7 @@ import {
   Trophy,
   User,
 } from 'lucide-react';
+import { mergeVerifiedLiveUpdates } from '../liveStateUtils';
 
 interface LiveViewProps {
   selectedSport: ApexSportFilter;
@@ -50,35 +51,8 @@ export const LiveView: React.FC<LiveViewProps> = ({
   onManualLivePoll,
   onGoToPicks,
 }) => {
-  // Merge live score updates into games
-  const enrichedGames = games.map((game) => {
-    const update = liveUpdates[game.eventId];
-    if (!update) return game;
-
-    return {
-      ...game,
-      status: update.status || game.status,
-      statusDetail: update.statusDetail || game.statusDetail,
-      homeScore: update.homeScore !== null ? update.homeScore : game.homeScore,
-      awayScore: update.awayScore !== null ? update.awayScore : game.awayScore,
-      period: update.period !== undefined ? update.period : game.period,
-      displayClock: update.displayClock !== undefined ? update.displayClock : game.displayClock,
-      inning: update.inning !== undefined ? update.inning : game.inning,
-      inningState: update.inningState !== undefined ? update.inningState : game.inningState,
-      matchClock: update.matchClock !== undefined ? update.matchClock : game.matchClock,
-      stoppageTime: update.stoppageTime !== undefined ? update.stoppageTime : game.stoppageTime,
-      penalties: update.penalties !== undefined ? update.penalties : game.penalties,
-      aggregateScore: update.aggregateScore !== undefined ? update.aggregateScore : game.aggregateScore,
-      setsWonA: update.setsWonA !== undefined ? update.setsWonA : game.setsWonA,
-      setsWonB: update.setsWonB !== undefined ? update.setsWonB : game.setsWonB,
-      setScores: update.setScores !== undefined ? update.setScores : game.setScores,
-      currentSet: update.currentSet !== undefined ? update.currentSet : game.currentSet,
-      gameScore: update.gameScore !== undefined ? update.gameScore : game.gameScore,
-      serving: update.serving !== undefined ? update.serving : game.serving,
-      winner: update.winner !== undefined ? update.winner : game.winner,
-      lastVerifiedAt: update.lastVerifiedAt || game.lastVerifiedAt,
-    };
-  });
+  // Merge live-score updates and surface verified live events even when the selected schedule date differs.
+  const enrichedGames = mergeVerifiedLiveUpdates(games, liveUpdates);
 
   const liveGames = enrichedGames.filter((g) => g.status === 'LIVE');
   const upcomingGames = enrichedGames.filter((g) => g.status === 'UPCOMING');

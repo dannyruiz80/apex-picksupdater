@@ -1,7 +1,7 @@
 {
   "name": "react-example",
   "private": true,
-  "version": "1.14.7",
+  "version": "1.14.8",
   "type": "module",
   "scripts": {
     "dev": "tsx server.ts",
@@ -24,7 +24,10 @@
     "verify:tennis-1-14-6": "tsx src/server/tennisMarketModelCoverage146Verification.ts",
     "verify:tennis-1-14-7": "tsx src/server/tennisProbabilityMarketAlignment147Verification.ts",
     "verify:parlay-1-14-7": "tsx src/server/parlay.verify.ts",
-    "verify:props-execution-1-14-7": "tsx src/server/providerFirstPropExecution147Verification.ts"
+    "verify:props-execution-1-14-7": "tsx src/server/providerFirstPropExecution147Verification.ts",
+    "verify:wnba-1-14-8": "tsx src/server/wnbaProduction148Verification.ts",
+    "verify:wnba-backtest-1-14-8": "tsx src/server/wnbaBacktestMonteCarlo148Verification.ts",
+    "verify:wnba-mc-date-1-14-8": "tsx src/server/wnbaSimulationSlate148Verification.ts"
   },
   "dependencies": {
     "@google/genai": "^2.4.0",
